@@ -42,6 +42,10 @@ export class Depth {
   private depthClientsInitialized = false;
   private depthClients = new Set<object>();
 
+  depthProjectionMatrices: THREE.Matrix4[] = [];
+  depthViewMatrices: THREE.Matrix4[] = [];
+  depthViewProjectionMatrices: THREE.Matrix4[] = [];
+
   /**
    * Depth is a lightweight manager based on three.js to simply prototyping
    * with Depth in WebXR.
@@ -158,8 +162,34 @@ export class Depth {
     return vertexPosition;
   }
 
-  updateCPUDepthData(depthData: XRCPUDepthInformation, view_id = 0) {
-    this.cpuDepthData[view_id] = depthData;
+  private updateDepthMatrices(depthData: XRDepthInformation, viewId: number) {
+    // Populate depth view and projection matrices.
+    while (viewId >= this.depthViewMatrices.length) {
+      this.depthViewMatrices.push(new THREE.Matrix4());
+      this.depthViewProjectionMatrices.push(new THREE.Matrix4());
+      this.depthProjectionMatrices.push(new THREE.Matrix4());
+    }
+    if (depthData.projectionMatrix && depthData.transform) {
+      this.depthProjectionMatrices[viewId].fromArray(
+        depthData.projectionMatrix
+      );
+      this.depthViewMatrices[viewId].fromArray(
+        depthData.transform.inverse.matrix
+      );
+    } else {
+      const camera =
+        this.renderer.xr?.getCamera()?.cameras?.[viewId] ?? this.camera;
+      this.depthProjectionMatrices[viewId].copy(camera.projectionMatrix);
+      this.depthViewMatrices[viewId].copy(camera.matrixWorldInverse);
+    }
+    this.depthViewProjectionMatrices[viewId].multiplyMatrices(
+      this.depthViewMatrices[viewId],
+      this.depthProjectionMatrices[viewId]
+    );
+  }
+
+  updateCPUDepthData(depthData: XRCPUDepthInformation, viewId = 0) {
+    this.cpuDepthData[viewId] = depthData;
     // Workaround for b/382679381.
     this.rawValueToMeters = depthData.rawValueToMeters;
     if (this.options.useFloat32) {
@@ -167,15 +197,15 @@ export class Depth {
     }
 
     // Updates Depth Array.
-    if (this.depthArray[view_id] == null) {
-      this.depthArray[view_id] = this.options.useFloat32
+    if (this.depthArray[viewId] == null) {
+      this.depthArray[viewId] = this.options.useFloat32
         ? new Float32Array(depthData.data)
         : new Uint16Array(depthData.data);
       this.width = depthData.width;
       this.height = depthData.height;
     } else {
       // Copies the data from an ArrayBuffer to the existing TypedArray.
-      this.depthArray[view_id].set(
+      this.depthArray[viewId].set(
         this.options.useFloat32
           ? new Float32Array(depthData.data)
           : new Uint16Array(depthData.data)
@@ -184,16 +214,18 @@ export class Depth {
 
     // Updates Depth Texture.
     if (this.options.depthTexture.enabled && this.depthTextures) {
-      this.depthTextures.updateData(depthData, view_id);
+      this.depthTextures.updateData(depthData, viewId);
     }
 
-    if (this.options.depthMesh.enabled && this.depthMesh && view_id == 0) {
+    if (this.options.depthMesh.enabled && this.depthMesh && viewId == 0) {
       this.depthMesh.updateDepth(depthData);
     }
+
+    this.updateDepthMatrices(depthData, viewId);
   }
 
-  updateGPUDepthData(depthData: XRWebGLDepthInformation, view_id = 0) {
-    this.gpuDepthData[view_id] = depthData;
+  updateGPUDepthData(depthData: XRWebGLDepthInformation, viewId = 0) {
+    this.gpuDepthData[viewId] = depthData;
     // Workaround for b/382679381.
     this.rawValueToMeters = depthData.rawValueToMeters;
     if (this.options.useFloat32) {
@@ -208,15 +240,15 @@ export class Depth {
         ? this.depthMesh.convertGPUToGPU(depthData)
         : null;
     if (cpuDepth) {
-      if (this.depthArray[view_id] == null) {
-        this.depthArray[view_id] = this.options.useFloat32
+      if (this.depthArray[viewId] == null) {
+        this.depthArray[viewId] = this.options.useFloat32
           ? new Float32Array(cpuDepth.data)
           : new Uint16Array(cpuDepth.data);
         this.width = cpuDepth.width;
         this.height = cpuDepth.height;
       } else {
         // Copies the data from an ArrayBuffer to the existing TypedArray.
-        this.depthArray[view_id].set(
+        this.depthArray[viewId].set(
           this.options.useFloat32
             ? new Float32Array(cpuDepth.data)
             : new Uint16Array(cpuDepth.data)
@@ -226,21 +258,23 @@ export class Depth {
 
     // Updates Depth Texture.
     if (this.options.depthTexture.enabled && this.depthTextures) {
-      this.depthTextures.updateNativeTexture(depthData, this.renderer, view_id);
+      this.depthTextures.updateNativeTexture(depthData, this.renderer, viewId);
     }
 
-    if (this.options.depthMesh.enabled && this.depthMesh && view_id == 0) {
+    if (this.options.depthMesh.enabled && this.depthMesh && viewId == 0) {
       if (cpuDepth) {
         this.depthMesh.updateDepth(cpuDepth);
       } else {
         this.depthMesh.updateGPUDepth(depthData);
       }
     }
+
+    this.updateDepthMatrices(depthData, viewId);
   }
 
-  getTexture(view_id: number) {
+  getTexture(viewId: number) {
     if (!this.options.depthTexture.enabled) return undefined;
-    return this.depthTextures?.get(view_id);
+    return this.depthTextures?.get(viewId);
   }
 
   update(frame?: XRFrame) {

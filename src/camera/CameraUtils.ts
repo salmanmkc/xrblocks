@@ -23,6 +23,8 @@ export const aspectRatios = {
  */
 export function transformRgbToDepthUv(
   rgbUv: {u: number; v: number},
+  renderCameraWorldFromClip: THREE.Matrix4,
+  depthCameraClipFromWorld: THREE.Matrix4,
   xrDeviceCamera?: XRDeviceCamera
 ) {
   if (xrDeviceCamera?.simulatorCamera) {
@@ -92,9 +94,17 @@ export function transformRgbToDepthUv(
   const finalNormX = u_fitted * params.scale * params.scaleX;
   const finalNormY = v_fitted * params.scale * params.scaleY;
 
-  // Convert the final normalized coordinate back to a UV coordinate [0, 1].
-  const finalU = finalNormX + 0.5;
-  const finalV = finalNormY + 0.5;
+  // Backwards project from the render camera to depth camera.
+  const depthClipCoord = new THREE.Vector4(
+    2.0 * finalNormX,
+    2.0 * finalNormY,
+    0,
+    0
+  );
+  depthClipCoord.applyMatrix4(renderCameraWorldFromClip);
+  depthClipCoord.applyMatrix4(depthCameraClipFromWorld);
+  const finalU = 0.5 * depthClipCoord.x + 0.5;
+  const finalV = 0.5 * depthClipCoord.y + 0.5;
 
   return {u: finalU, v: 1.0 - finalV};
 }
@@ -124,7 +134,12 @@ export function transformRgbUvToWorld(
 ) {
   if (!depthArray || !viewProjectionMatrix || !matrixWorld || !xrDepth)
     return null;
-  const depthUV = transformRgbToDepthUv(rgbUv, xrDeviceCamera);
+  const depthUV = transformRgbToDepthUv(
+    rgbUv,
+    viewProjectionMatrix.clone().invert(),
+    xrDepth.depthViewProjectionMatrices[0],
+    xrDeviceCamera
+  );
   if (!depthUV) {
     return null;
   }
