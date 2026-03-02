@@ -36,6 +36,13 @@ export class SimulatorControls {
   simulatorModes: {[key: string]: SimulatorControlMode};
   renderer!: THREE.WebGLRenderer;
   private simulatorOptions?: SimulatorOptions;
+  #enabled = true;
+  get enabled() {
+    return this.#enabled;
+  }
+  set enabled(value) {
+    this.setEnabled(value);
+  }
 
   private _onPointerDown = this.onPointerDown.bind(this);
   private _onPointerUp = this.onPointerUp.bind(this);
@@ -130,20 +137,24 @@ export class SimulatorControls {
   }
 
   onPointerMove(event: MouseEvent) {
+    if (!this.enabled) return;
     this.simulatorModeControls.onPointerMove(event);
   }
 
   onPointerDown(event: MouseEvent) {
+    if (!this.enabled) return;
     this.simulatorModeControls.onPointerDown(event);
     this.pointerDown = true;
   }
 
   onPointerUp(event: MouseEvent) {
+    if (!this.enabled) return;
     this.simulatorModeControls.onPointerUp(event);
     this.pointerDown = false;
   }
 
   onKeyDown(event: KeyboardEvent) {
+    if (!this.enabled) return;
     // On macOS, keyup events are not fired for keys held when Command (Meta)
     // is pressed. Clear all keys to prevent stuck movement.
     if (
@@ -167,6 +178,7 @@ export class SimulatorControls {
   }
 
   onKeyUp(event: KeyboardEvent) {
+    if (!this.enabled) return;
     this.downKeys.delete(event.code as Keycodes);
   }
 
@@ -192,5 +204,15 @@ export class SimulatorControls {
       }
     });
     this.modeIndicatorElement = element;
+  }
+
+  setEnabled(value: boolean) {
+    if (value == this.#enabled) {
+      return;
+    }
+    this.#enabled = value;
+    if (!value) {
+      this.downKeys.clear();
+    }
   }
 }
