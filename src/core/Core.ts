@@ -72,7 +72,7 @@ export class Core {
   input = new Input();
 
   /** The main camera for rendering. */
-  camera!: THREE.PerspectiveCamera;
+  camera = new THREE.PerspectiveCamera();
 
   /** The root scene graph for all objects. */
   scene = new THREE.Scene();
@@ -198,11 +198,13 @@ export class Core {
       this.registry.register(this.transition);
     }
 
-    this.camera = new THREE.PerspectiveCamera(
-      /*fov=*/ 90,
-      window.innerWidth / window.innerHeight,
-      /*near=*/ options.camera.near,
-      /*far=*/ options.camera.far
+    this.camera.copy(
+      new THREE.PerspectiveCamera(
+        /*fov=*/ 90,
+        window.innerWidth / window.innerHeight,
+        /*near=*/ options.camera.near,
+        /*far=*/ options.camera.far
+      )
     );
     this.registry.register(this.camera, THREE.Camera);
     this.registry.register(this.camera, THREE.PerspectiveCamera);

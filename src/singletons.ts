@@ -58,6 +58,21 @@ export const depth = core.depth;
  */
 export const timer = core.timer;
 
+/**
+ * A direct alias to the `CoreSound` instance, which manages audio.
+ */
+export const sound = core.sound;
+
+/**
+ * A direct alias to the `Input` instance, which manages inputs like controllers and hands.
+ */
+export const input = core.input;
+
+/**
+ * A direct alias to the `THREE.PerspectiveCamera` instance.
+ */
+export const camera = core.camera;
+
 // --- Function Aliases ---
 // These are bound shortcuts to frequently used methods for convenience.
 
