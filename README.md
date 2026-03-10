@@ -1,8 +1,8 @@
 # XR Blocks
 
 [![NPM Package](https://img.shields.io/npm/v/xrblocks)](https://www.npmjs.com/package/xrblocks)
-[![Build Size](https://badgen.net/bundlephobia/minzip/xrblocks)](https://bundlephobia.com/result?p=xrblocks)
-![jsDelivr hits (GitHub)](https://img.shields.io/jsdelivr/gh/hw/google/xrblocks)
+[![jsDelivr npm hits](<https://img.shields.io/jsdelivr/npm/hw/xrblocks?label=jsdelivr%20(npm)>)](https://www.jsdelivr.com/package/npm/xrblocks)
+[![jsDelivr GitHub hits](<https://img.shields.io/jsdelivr/gh/hw/google/xrblocks?label=jsdelivr%20(GitHub)>)](https://www.jsdelivr.com/package/gh/google/xrblocks)
 [![arXiv](https://img.shields.io/badge/arXiv-2509.25504-b31b1b.svg)](https://arxiv.org/abs/2509.25504)
 
 #### JavaScript library for rapid XR and AI prototyping
@@ -318,7 +318,7 @@ Extending XR Blocks to XR communication:
 ### Terms of Service
 
 - Please follow
-  [Google's Privacy & Terms](https://ai.google.dev/gemini-api/terms) when
+  [Google's Privacy & Terms](https://policies.google.com/privacy?hl=en-US) when
   using this SDK.
 
 - When using AI features in this SDK, please follow
