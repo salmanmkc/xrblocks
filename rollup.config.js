@@ -159,4 +159,41 @@ export default [
       }),
     ],
   },
+  // Enable demo projects (excluding those with a custom build system) to use TypeScript
+  // and import it in their index.html via by referencing, e.g. `./build/main.js`.
+  ...globSync('demos/**/*.ts', {
+    ignore: [
+      'demos/**/node_modules/**',
+      'demos/**/build/**',
+      // Projects with a custom build system.
+      'demos/drone/**',
+    ],
+  }).map((file) => ({
+    input: file,
+    external: () => true,
+    output: {
+      file: path.join(
+        path.dirname(file),
+        'build',
+        path.basename(file).replace(/\.ts$/, '.js')
+      ),
+      format: 'esm',
+    },
+    plugins: [
+      typescript({
+        tsconfig: false,
+        include: [file],
+        compilerOptions: {
+          target: 'ES2022',
+          module: 'ESNext',
+          moduleResolution: 'bundler',
+          esModuleInterop: true,
+          forceConsistentCasingInFileNames: true,
+          strict: true,
+          skipLibCheck: true,
+          declaration: false,
+        },
+      }),
+    ],
+  })),
 ];

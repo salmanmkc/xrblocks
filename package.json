@@ -9,7 +9,7 @@
     "dev": "concurrently \"npm:build:watch\" \"npm:serve\"",
     "start": "npm run dev",
     "build:watch": "rollup -c -w",
-    "serve": "http-server --cors -a 127.0.0.1 -p 8080",
+    "serve": "concurrently \"rollup -c -w\" \"http-server --cors -a 127.0.0.1 -p 8080\"",
     "build": "echo \"Building xrblocks.js...\" && rollup -c --failAfterWarnings",
     "prepare": "npm run build",
     "lint": "eslint src",
