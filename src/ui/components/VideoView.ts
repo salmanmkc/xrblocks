@@ -55,7 +55,7 @@ export class VideoView extends View {
     };
   }) => void;
 
-  private texture?: THREE.Texture<HTMLVideoElement>;
+  private texture?: THREE.Texture;
   private videoAspectRatio: number = 0.0;
 
   /**
@@ -115,11 +115,13 @@ export class VideoView extends View {
    * @param source - The video source (URL, HTMLVideoElement, VideoTexture, or
    * VideoStream).
    */
-  load(source: string | HTMLVideoElement | THREE.VideoTexture | VideoStream) {
+  load(source: string | HTMLVideoElement | THREE.Texture | VideoStream) {
     if (source instanceof HTMLVideoElement) {
       this.loadFromVideoElement(source);
     } else if (source instanceof THREE.VideoTexture) {
       this.loadFromVideoTexture(source);
+    } else if (source instanceof THREE.Texture) {
+      this.loadFromTexture(source);
     } else if (typeof source === 'string') {
       this.loadFromURL(source);
     } else if (source instanceof VideoStream) {
@@ -143,7 +145,11 @@ export class VideoView extends View {
         console.warn('Stream is ready, but its texture is not available.');
         return;
       }
-      this.loadFromVideoTexture(this.stream_.texture);
+      if (this.stream_.texture instanceof THREE.VideoTexture) {
+        this.loadFromVideoTexture(this.stream_.texture);
+      } else {
+        this.loadFromTexture(this.stream_.texture);
+      }
       // The event from VideoStream provides the definitive aspect ratio
       if (event.details?.aspectRatio !== undefined) {
         this.videoAspectRatio = event.details?.aspectRatio;
@@ -224,7 +230,7 @@ export class VideoView extends View {
   loadFromVideoTexture(videoTextureInstance: THREE.VideoTexture) {
     this.texture = videoTextureInstance;
     this.material.map = this.texture;
-    this.video = this.texture.image; // Underlying HTMLVideoElement
+    this.video = this.texture.image as HTMLVideoElement; // Underlying video
 
     if (this.video && this.video.videoWidth && this.video.videoHeight) {
       this.videoAspectRatio = this.video.videoWidth / this.video.videoHeight;
@@ -250,6 +256,18 @@ export class VideoView extends View {
       this.videoAspectRatio = 0;
       this.updateLayout();
     }
+  }
+
+  /**
+   * Configures the view to use a generic texture, such as an ExternalTexture
+   * produced by WebXR camera access.
+   * @param textureInstance - The texture to display.
+   */
+  loadFromTexture(textureInstance: THREE.Texture) {
+    this.texture = textureInstance;
+    this.material.map = this.texture ?? null;
+    this.video = undefined;
+    this.updateLayout();
   }
 
   /** Starts video playback. */

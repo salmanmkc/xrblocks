@@ -255,10 +255,18 @@ export class Core {
     // Sets up device camera.
     if (options.deviceCamera?.enabled) {
       this.deviceCamera = new XRDeviceCamera(options.deviceCamera);
+      this.deviceCamera.setRenderer(this.renderer);
       this.registry.register(this.deviceCamera);
     }
 
     const webXRRequiredFeatures: string[] = options.webxrRequiredFeatures;
+    // Use camera-access when the browser supports it.
+    if (options.deviceCamera?.enabled) {
+      if (!this.webXRSettings.optionalFeatures) {
+        this.webXRSettings.optionalFeatures = [];
+      }
+      (this.webXRSettings.optionalFeatures as string[]).push('camera-access');
+    }
     this.webXRSettings.requiredFeatures = webXRRequiredFeatures;
     // Sets up depth.
     if (options.depth.enabled) {
@@ -425,6 +433,11 @@ export class Core {
       this.simulator.simulatorUpdate();
     }
     this.depth.update(frame);
+
+    // Update XR camera fallback textures.
+    if (this.deviceCamera?.isUsingXRCameraAccess) {
+      this.deviceCamera.updateXRCamera(frame);
+    }
 
     if (this.lighting) {
       this.lighting.update();

@@ -84,7 +84,7 @@ export class VideoStream<
   width?: number;
   height?: number;
   aspectRatio?: number;
-  texture: THREE.VideoTexture;
+  texture: THREE.Texture;
   state = StreamState.IDLE;
 
   protected stream_: MediaStream | null = null;
@@ -113,6 +113,17 @@ export class VideoStream<
     this.texture.colorSpace = THREE.SRGBColorSpace;
     this.texture.minFilter = THREE.LinearFilter;
     this.texture.magFilter = THREE.LinearFilter;
+
+    // Keep the texture updating when srcObject changes.
+    const texture = this.texture as THREE.VideoTexture & {
+      update: () => void;
+    };
+    const videoEl = this.video_;
+    texture.update = function () {
+      if (videoEl.readyState >= videoEl.HAVE_CURRENT_DATA) {
+        texture.needsUpdate = true;
+      }
+    };
   }
 
   /**

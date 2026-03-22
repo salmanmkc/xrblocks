@@ -11,5 +11,5 @@
     "composite": true
   },
   "include": ["src/**/*.ts"],
-  "exclude": ["src/addons/**/*", "src/addons/**/cli/*"]
+  "exclude": ["src/addons/**/*", "src/addons/**/cli/*", "src/**/*.test.ts"]
 }
