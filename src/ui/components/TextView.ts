@@ -302,10 +302,39 @@ export class TextView extends View<TextViewEventMap> {
         : (this.fontSize ?? 0.06);
     ctx.font = `${fontSize * resolution}px ${this.font}`;
     ctx.fillStyle = `#${getColorHex(this.fontColor).toString(16).padStart(6, '0')}`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
+
+    // Use the configured textAlign and compute anchor positions accordingly.
+    const align = this.textAlign as CanvasTextAlign;
+    ctx.textAlign = align;
+    let drawX: number;
+    switch (align) {
+      case 'left':
+        drawX = 0;
+        break;
+      case 'right':
+        drawX = canvas!.width;
+        break;
+      default:
+        drawX = canvas!.width / 2;
+        break;
+    }
+
+    // Map anchorY to canvas textBaseline and Y position.
+    let baseline: CanvasTextBaseline = 'middle';
+    let drawY: number = canvas!.height / 2;
+    if (typeof this.anchorY === 'string') {
+      if (this.anchorY.startsWith('top')) {
+        baseline = 'top';
+        drawY = 0;
+      } else if (this.anchorY.startsWith('bottom')) {
+        baseline = 'bottom';
+        drawY = canvas!.height;
+      }
+    }
+    ctx.textBaseline = baseline;
+
     // TODO: add line-break for canvas-based text.
-    ctx.fillText(this.text, canvas!.width / 2, canvas!.height / 2);
+    ctx.fillText(this.text, drawX, drawY);
 
     if (this.textObj?.material.map) {
       this.textObj.material.map.needsUpdate = true;
