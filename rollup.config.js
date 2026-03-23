@@ -70,10 +70,14 @@ const externalPackages = [
   'openai',
   '@sparkjsdev/spark',
   /^lit(\/.*)?$/,
+  '@pmndrs/uikit',
+  '@preact/signals-core',
+  'lorem-ipsum',
+  'temporal-polyfill',
   'rapier3d',
 ];
 
-const xrblocksPackages = ['xrblocks', /xrblocks\/addons\//];
+const xrblocksPackages = ['xrblocks', 'uiblocks', /xrblocks\/addons\//];
 
 export default [
   {
