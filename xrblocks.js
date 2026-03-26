@@ -14,9 +14,9 @@
  * limitations under the License.
  *
  * @file xrblocks.js
- * @version v0.10.0
- * @commitid 795ca91
- * @builddate 2026-02-22T18:41:32.047Z
+ * @version v0.11.0
+ * @commitid 703c117
+ * @builddate 2026-03-26T22:09:23.507Z
  * @description XR Blocks SDK, built from source with the above commit ID.
  * @agent When using with Gemini to create XR apps, use **Gemini Canvas** mode,
  * and follow rules below:
@@ -152,7 +152,7 @@ class Agent {
     async run() {
         while (true) {
             const context = this.contextBuilder.build(this.memory, this.tools);
-            const response = await this.ai.model.query({ type: 'text', text: context }, this.tools);
+            const response = await this.ai.model.query({ type: 'text', text: context });
             this.memory.addShortTerm({ role: 'ai', content: JSON.stringify(response) });
             if (response?.toolCall) {
                 console.log(`Executing tool: ${response.toolCall.name}`);
@@ -1110,27 +1110,17 @@ function parseBase64DataURL(dataURL) {
     }
 }
 
+const GEMINI_DEFAULT_FLASH_MODEL = 'gemini-2.5-flash';
+const GEMINI_DEFAULT_LIVE_MODEL = 'gemini-2.5-flash-native-audio-preview-12-2025';
 class GeminiOptions {
     constructor() {
         this.apiKey = '';
         this.urlParam = 'geminiKey';
         this.keyValid = false;
         this.enabled = false;
-        this.model = 'gemini-2.0-flash';
+        this.model = GEMINI_DEFAULT_FLASH_MODEL;
+        this.liveModel = GEMINI_DEFAULT_LIVE_MODEL;
         this.config = {};
-        this.live = {
-            enabled: false,
-            model: 'gemini-live-2.5-flash-preview',
-            voiceName: 'Aoede',
-            screenshotInterval: 3000,
-            audioConfig: {
-                sampleRate: 16000,
-                channelCount: 1,
-                echoCancellation: true,
-                noiseSuppression: true,
-                autoGainControl: true,
-            },
-        };
     }
 }
 class OpenAIOptions {
@@ -1155,6 +1145,15 @@ class AIOptions {
 
 class BaseAIModel {
     constructor() { }
+    async hasApiKey() {
+        return false;
+    }
+}
+
+function isRunningInGeminiCanvas() {
+    // Canvas injects several scripts which allow using the free tier of Gemini and Firebase APIs without API keys.
+    return (typeof window
+        .firebaseAuthBridgeScriptLoaded !== 'undefined');
 }
 
 let createPartFromUri;
@@ -1205,7 +1204,8 @@ class Gemini extends BaseAIModel {
             return false;
         }
         if (!this.inited) {
-            this.ai = new GoogleGenAI({ apiKey: this.options.apiKey });
+            // Use a random string as API key to avoid Google GenAI from complaining.
+            this.ai = new GoogleGenAI({ apiKey: this.options.apiKey || 'X' });
             this.inited = true;
         }
         return true;
@@ -1213,7 +1213,7 @@ class Gemini extends BaseAIModel {
     isLiveAvailable() {
         return this.isAvailable() && EndSensitivity && StartSensitivity && Modality;
     }
-    async startLiveSession(params = {}, model = 'gemini-2.5-flash-native-audio-preview-09-2025') {
+    async startLiveSession(params = {}, model) {
         if (!this.isLiveAvailable()) {
             throw new Error('Live API not available. Make sure @google/genai module is loaded.');
         }
@@ -1264,7 +1264,7 @@ class Gemini extends BaseAIModel {
         };
         try {
             const connectParams = {
-                model: model,
+                model: model ?? this.options.liveModel,
                 callbacks: callbacks,
                 config: defaultConfig,
             };
@@ -1314,7 +1314,17 @@ class Gemini extends BaseAIModel {
             isAvailable: this.isLiveAvailable(),
         };
     }
-    async query(input, _tools = []) {
+    async query(input) {
+        const useExponentialBackoff = 'useExponentialBackoff' in input &&
+            input.useExponentialBackoff !== undefined
+            ? input.useExponentialBackoff
+            : isRunningInGeminiCanvas();
+        if (useExponentialBackoff) {
+            return this.queryWithExponentialFalloff(input);
+        }
+        return this.queryOnce(input);
+    }
+    async queryOnce(input) {
         if (!this.inited) {
             console.warn('Gemini not inited.');
             return null;
@@ -1374,6 +1384,26 @@ class Gemini extends BaseAIModel {
         }
         return { text: response.text || null };
     }
+    // Try to query multiple times with exponential backoff.
+    // Only used within a Gemini Canvas environment.
+    async queryWithExponentialFalloff(input) {
+        const delays = [1000, 2000, 4000, 8000, 16000];
+        let attempt = 0;
+        let lastError = null;
+        while (attempt < delays.length) {
+            try {
+                return await this.queryOnce(input);
+            }
+            catch (error) {
+                console.warn(`Attempt ${attempt + 1} failed:`, error);
+                lastError = error;
+                await new Promise((resolve) => setTimeout(resolve, delays[attempt]));
+                attempt++;
+            }
+        }
+        console.error('Failed to query with exponential backoff:', lastError);
+        return null;
+    }
     async generate(prompt, type = 'image', systemInstruction = 'Generate an image', model = 'gemini-2.5-flash-image') {
         if (!this.isAvailable())
             return;
@@ -1410,6 +1440,9 @@ class Gemini extends BaseAIModel {
                 }
             }
         }
+    }
+    async hasApiKey() {
+        return this.options.apiKey !== '' || isRunningInGeminiCanvas();
     }
 }
 
@@ -1506,6 +1539,7 @@ const SUPPORTED_MODELS = {
 class AI extends Script {
     constructor() {
         super(...arguments);
+        this.editorIcon = 'network_intelligence';
         this.lock = false;
     }
     static { this.dependencies = { aiOptions: AIOptions }; }
@@ -1552,11 +1586,11 @@ class AI extends Script {
     }
     async initializeModel(ModelClass, modelOptions) {
         const apiKey = await this.resolveApiKey(modelOptions);
-        if (!apiKey || !this.isValidApiKey(apiKey)) {
+        if ((!apiKey || !this.isValidApiKey(apiKey)) && !this.hasApiKey()) {
             console.error(`No valid API key found for ${this.options.model}`);
             return;
         }
-        modelOptions.apiKey = apiKey;
+        modelOptions.apiKey = apiKey || '';
         this.model = new ModelClass(modelOptions);
         try {
             await this.model.init();
@@ -1700,6 +1734,8 @@ class AI extends Script {
         const modelOptions = this.options[this.options.model];
         if (!modelOptions)
             return false;
+        if (this.model?.hasApiKey ? await this.model.hasApiKey() : false)
+            return true;
         const apiKey = await this.resolveApiKey(modelOptions);
         return apiKey && this.isValidApiKey(apiKey);
     }
@@ -1833,8 +1869,12 @@ function deepMerge(obj1, obj2) {
     }
     const merged = obj1;
     for (const key in obj2) {
-        // Ensure the key is actually on obj2, not its prototype chain.
-        if (Object.prototype.hasOwnProperty.call(obj2, key)) {
+        // Ensure the key is actually on obj2, not its prototype chain,
+        // and skip dangerous keys to prevent prototype pollution.
+        if (Object.hasOwn(obj2, key) &&
+            key !== '__proto__' &&
+            key !== 'constructor' &&
+            key !== 'prototype') {
             const val1 = merged[key];
             const val2 = obj2[key];
             if (val1 &&
@@ -2142,6 +2182,14 @@ class VideoStream extends Script {
         this.texture.colorSpace = THREE.SRGBColorSpace;
         this.texture.minFilter = THREE.LinearFilter;
         this.texture.magFilter = THREE.LinearFilter;
+        // Keep the texture updating when srcObject changes.
+        const texture = this.texture;
+        const videoEl = this.video_;
+        texture.update = function () {
+            if (videoEl.readyState >= videoEl.HAVE_CURRENT_DATA) {
+                texture.needsUpdate = true;
+            }
+        };
     }
     /**
      * Sets the stream's state and dispatches a 'statechange' event.
@@ -2271,6 +2319,7 @@ class VideoStream extends Script {
  * and reports its state using VideoStream's event model.
  */
 class XRDeviceCamera extends VideoStream {
+    static { this.XR_CAMERA_ACCESS_TIMEOUT_MS = 5000; }
     /**
      * @param options - The configuration options.
      */
@@ -2280,6 +2329,8 @@ class XRDeviceCamera extends VideoStream {
         this.isInitializing_ = false;
         this.availableDevices_ = [];
         this.currentDeviceIndex_ = -1;
+        this.useXRCameraAccess_ = false;
+        this.xrCameraAccessTimeout_ = null;
         this.videoConstraints_ = options.videoConstraints ?? {
             facingMode: 'environment',
         };
@@ -2306,14 +2357,26 @@ class XRDeviceCamera extends VideoStream {
         return devices.filter((device) => device.kind === 'videoinput');
     }
     /**
+     * Sets the renderer reference, needed for WebXR camera access fallback.
+     */
+    setRenderer(renderer) {
+        this.renderer_ = renderer;
+    }
+    /**
      * Initializes the camera based on the initial constraints.
      */
     async init() {
+        this.useXRCameraAccess_ = false;
+        this.clearXRCameraAccessTimeout_();
         this.setState_(StreamState.INITIALIZING);
         try {
             this.availableDevices_ = await this.getAvailableVideoDevices();
             if (this.availableDevices_.length > 0) {
                 await this.initStream_();
+            }
+            else if (this.renderer_) {
+                this.startXRCameraAccessFallback_('No video devices found.');
+                return;
             }
             else {
                 this.setState_(StreamState.NO_DEVICES_FOUND);
@@ -2321,6 +2384,10 @@ class XRDeviceCamera extends VideoStream {
             }
         }
         catch (error) {
+            if (this.renderer_) {
+                this.startXRCameraAccessFallback_('Camera initialization failed.', error);
+                return;
+            }
             this.setState_(StreamState.ERROR, { error: error });
             console.error('Error initializing XRDeviceCamera:', error);
             throw error;
@@ -2373,7 +2440,6 @@ class XRDeviceCamera extends VideoStream {
                 }
             }
             else {
-                // Otherwise, request the stream from the browser.
                 stream = await navigator.mediaDevices.getUserMedia({
                     video: this.videoConstraints_,
                 });
@@ -2382,7 +2448,6 @@ class XRDeviceCamera extends VideoStream {
             if (!videoTracks.length) {
                 throw new Error('MediaStream has no video tracks.');
             }
-            // After the stream is active, we can get the track ID.
             const activeTrack = videoTracks[0];
             this.currentTrackSettings_ = activeTrack.getSettings();
             console.debug('Active track settings:', this.currentTrackSettings_);
@@ -2392,22 +2457,21 @@ class XRDeviceCamera extends VideoStream {
             else {
                 console.warn('Stream started without deviceId as it was unavailable');
             }
+            // Clear handlers before resetting the element.
+            this.video_.onerror = null;
+            this.video_.onloadedmetadata = null;
             this.stop_(); // Stop any previous stream before starting new one.
             this.stream_ = stream;
             this.video_.srcObject = stream;
-            this.video_.src = ''; // Required for some browsers to reset the src.
             await new Promise((resolve, reject) => {
                 this.video_.onloadedmetadata = () => {
                     this.handleVideoStreamLoadedMetadata(resolve, reject, true);
                 };
-                this.video_.onerror = () => {
-                    const error = new Error('Error playing camera stream.');
-                    this.setState_(StreamState.ERROR, { error });
-                    reject(error);
-                };
-                this.video_.play();
+                // Autoplay policy can still reject play() here.
+                this.video_.play().catch((playError) => {
+                    console.warn('video.play() rejected (may still autoplay):', playError);
+                });
             });
-            // Once stream is loaded and dimensions are known, set the final state.
             const details = {
                 width: this.width,
                 height: this.height,
@@ -2417,10 +2481,6 @@ class XRDeviceCamera extends VideoStream {
                 trackSettings: this.currentTrackSettings_,
             };
             this.setState_(StreamState.STREAMING, details);
-        }
-        catch (error) {
-            this.setState_(StreamState.ERROR, { error: error });
-            throw error;
         }
         finally {
             this.isInitializing_ = false;
@@ -2481,9 +2541,103 @@ class XRDeviceCamera extends VideoStream {
     getCurrentDeviceIndex() {
         return this.currentDeviceIndex_;
     }
+    /**
+     * Whether the camera is using the WebXR Raw Camera Access API fallback.
+     */
+    get isUsingXRCameraAccess() {
+        return this.useXRCameraAccess_;
+    }
+    /**
+     * Updates the camera texture from the WebXR Raw Camera Access API.
+     * Must be called each frame from the render loop when in XR camera mode.
+     */
+    updateXRCamera(frame) {
+        if (!this.useXRCameraAccess_ || !this.renderer_ || !frame)
+            return;
+        const binding = this.renderer_.xr.getBinding();
+        const refSpace = this.renderer_.xr.getReferenceSpace();
+        if (!binding || !refSpace)
+            return;
+        const pose = frame.getViewerPose(refSpace);
+        if (!pose)
+            return;
+        for (const view of pose.views) {
+            const xrCamera = view.camera;
+            if (!xrCamera)
+                continue;
+            const glTexture = binding.getCameraImage?.(xrCamera);
+            if (!glTexture)
+                continue;
+            if (!this.xrCameraTexture_) {
+                this.xrCameraTexture_ = new THREE.ExternalTexture(glTexture);
+                this.xrCameraTexture_.minFilter = THREE.LinearFilter;
+                this.xrCameraTexture_.magFilter = THREE.LinearFilter;
+                this.xrCameraTexture_.colorSpace = THREE.SRGBColorSpace;
+                this.xrCameraTexture_.generateMipmaps = false;
+            }
+            else {
+                this.xrCameraTexture_.sourceTexture = glTexture;
+            }
+            this.width = xrCamera.width;
+            this.height = xrCamera.height;
+            this.aspectRatio = this.width / this.height;
+            const texProperties = this.renderer_.properties.get(this.xrCameraTexture_);
+            texProperties.__webglTexture = glTexture;
+            texProperties.__version = 1;
+            this.texture = this.xrCameraTexture_;
+            if (!this.loaded) {
+                this.clearXRCameraAccessTimeout_();
+                this.loaded = true;
+                this.setState_(StreamState.STREAMING, {
+                    force: true,
+                    width: this.width,
+                    height: this.height,
+                    aspectRatio: this.aspectRatio,
+                });
+            }
+            break;
+        }
+    }
     registerSimulatorCamera(simulatorCamera) {
         this.simulatorCamera = simulatorCamera;
         this.init();
+    }
+    startXRCameraAccessFallback_(reason, error) {
+        if (!this.isXRCameraAccessGranted_()) {
+            this.useXRCameraAccess_ = false;
+            this.loaded = false;
+            this.setState_(StreamState.NO_DEVICES_FOUND, { force: true });
+            console.warn(`${reason} WebXR Raw Camera Access API is not available in this session.`, error);
+            return;
+        }
+        console.warn(`${reason} Falling back to WebXR Raw Camera Access API.`, error);
+        this.useXRCameraAccess_ = true;
+        this.loaded = false;
+        this.setState_(StreamState.INITIALIZING, { force: true });
+        this.clearXRCameraAccessTimeout_();
+        this.xrCameraAccessTimeout_ = setTimeout(() => {
+            if (!this.useXRCameraAccess_ || this.loaded)
+                return;
+            this.useXRCameraAccess_ = false;
+            this.setState_(StreamState.NO_DEVICES_FOUND, { force: true });
+            console.warn('WebXR Raw Camera Access API did not provide frames in time.');
+        }, XRDeviceCamera.XR_CAMERA_ACCESS_TIMEOUT_MS);
+    }
+    isXRCameraAccessGranted_() {
+        const session = this.renderer_?.xr.getSession();
+        if (!session) {
+            return true;
+        }
+        if (!('enabledFeatures' in session) || !session.enabledFeatures) {
+            return true;
+        }
+        return session.enabledFeatures.includes('camera-access');
+    }
+    clearXRCameraAccessTimeout_() {
+        if (!this.xrCameraAccessTimeout_)
+            return;
+        clearTimeout(this.xrCameraAccessTimeout_);
+        this.xrCameraAccessTimeout_ = null;
     }
 }
 
@@ -2951,7 +3105,6 @@ class WaitFrame {
     }
 }
 
-const IMMERSIVE_AR = 'immersive-ar';
 // Event type definitions for clarity
 var WebXRSessionEventType;
 (function (WebXRSessionEventType) {
@@ -3066,6 +3219,9 @@ class WebXRSessionManager extends THREE.EventDispatcher {
     isXRSupported() {
         return this.xrModeSupported;
     }
+    getSessionOptions() {
+        return this.sessionOptions;
+    }
     /** Internal callback for when a session successfully starts. */
     async onSessionStartedInternal(session) {
         session.addEventListener('end', this.onSessionEndedBound);
@@ -3155,9 +3311,14 @@ class XRButton {
         button.style.display = '';
         button.innerHTML = this.startText;
         button.disabled = false;
+        const allowsVideoFallback = this.sessionManager
+            .getSessionOptions()
+            ?.optionalFeatures?.includes('camera-access');
         button.onclick = () => {
             this.permissionsManager
-                .checkAndRequestPermissions(this.permissions)
+                .checkAndRequestPermissions(this.permissions, {
+                allowVideoFallback: allowsVideoFallback,
+            })
                 .then((result) => {
                 if (result.granted) {
                     this.sessionManager.startSession();
@@ -3529,7 +3690,6 @@ class DepthMesh extends MeshScript {
             }
             this.downsampledMesh = new THREE.Mesh(this.downsampledGeometry, material);
             this.downsampledMesh.visible = false;
-            this.add(this.downsampledMesh);
         }
     }
     /**
@@ -3578,6 +3738,15 @@ class DepthMesh extends MeshScript {
             this.geometry.computeVertexNormals();
         }
         this.updateColliderIfNeeded();
+    }
+    updatePose(translation, quaternion) {
+        this.position.copy(translation);
+        this.quaternion.copy(quaternion);
+        if (this.downsampledMesh) {
+            this.downsampledMesh.position.copy(translation);
+            this.downsampledMesh.quaternion.copy(quaternion);
+            this.downsampledMesh.updateMatrixWorld();
+        }
     }
     updateGPUDepth(depthData, projectionMatrixInverse) {
         this.updateDepth(this.convertGPUToGPU(depthData), projectionMatrixInverse);
@@ -4607,8 +4776,7 @@ class Depth {
         }
         if (this.options.depthMesh.enabled && this.depthMesh && viewId == 0) {
             this.depthMesh.updateDepth(depthData, this.depthProjectionInverseMatrices[0]);
-            this.depthMesh.position.copy(this.depthCameraPositions[0]);
-            this.depthMesh.quaternion.copy(this.depthCameraRotations[0]);
+            this.depthMesh.updatePose(this.depthCameraPositions[0], this.depthCameraRotations[0]);
         }
     }
     updateGPUDepthData(depthData, viewId = 0) {
@@ -4646,8 +4814,7 @@ class Depth {
             else {
                 this.depthMesh.updateGPUDepth(depthData, this.depthProjectionInverseMatrices[0]);
             }
-            this.depthMesh.position.copy(this.depthCameraPositions[0]);
-            this.depthMesh.quaternion.copy(this.depthCameraRotations[0]);
+            this.depthMesh.updatePose(this.depthCameraPositions[0], this.depthCameraRotations[0]);
         }
     }
     getTexture(viewId) {
@@ -5104,6 +5271,7 @@ class Reticle extends THREE.Mesh {
         }));
         /** Text description of the PanelMesh */
         this.name = 'Reticle';
+        this.editorIcon = 'target';
         /** Prevents the reticle itself from being a target for raycasting. */
         this.ignoreReticleRaycast = true;
         /** The world-space direction vector of the ray that hit the target. */
@@ -5350,6 +5518,9 @@ class MouseController extends Script {
     }; }
     constructor() {
         super();
+        this.type = 'MouseController';
+        this.name = 'Mouse Controller';
+        this.editorIcon = 'mouse';
         /**
          * User data for the controller, including its connection status, unique ID,
          * and selection state (mouse button pressed).
@@ -5385,6 +5556,9 @@ class MouseController extends Script {
      * @param event - The mouse event containing clientX and clientY coordinates.
      */
     updateMousePositionFromEvent(event) {
+        if (this.camera === undefined) {
+            return;
+        }
         // The controller's origin point is always the camera's position.
         this.position.copy(this.camera.position);
         const mouse = new THREE.Vector2();
@@ -5427,7 +5601,19 @@ class MouseController extends Script {
     }
 }
 
-class ActiveControllers extends THREE.Object3D {
+class ActiveControllers extends THREE.Group {
+    constructor() {
+        super(...arguments);
+        this.type = 'ActiveControllers';
+        this.name = 'Active Controllers';
+    }
+}
+class Reticles extends THREE.Group {
+    constructor() {
+        super(...arguments);
+        this.type = 'Reticles';
+        this.name = 'Reticles';
+    }
 }
 // Reusable objects for performance.
 const MATRIX4 = new THREE.Matrix4();
@@ -5450,16 +5636,17 @@ class Input {
         this.intersectionsForController = new Map();
         this.intersections = [];
         this.activeControllers = new ActiveControllers();
+        this.reticles = new Reticles();
     }
     /**
      * Initializes an instance with XR controllers, grips, hands, raycaster, and
      * default options. Only called by Core.
      */
-    init({ scene, options, renderer, }) {
-        scene.add(this.activeControllers);
+    init({ scene, systemsGroup, options, renderer, }) {
+        this.scene = scene;
+        systemsGroup.add(this.activeControllers, this.reticles);
         this.controllersEnabled = options.controllers.enabled;
         this.options = options;
-        this.scene = scene;
         const controllers = this.controllers;
         const controllerGrips = this.controllerGrips;
         for (let i = 0; i < NUM_HANDS; ++i) {
@@ -5570,7 +5757,7 @@ class Input {
                 ++id;
             }
             controller.reticle.visible = false;
-            this.scene.add(controller.reticle);
+            this.reticles.add(controller.reticle);
         }
     }
     /**
@@ -5839,6 +6026,8 @@ class Input {
     }
     // Performs the raycast assuming the raycaster is already set up.
     performRaycastOnScene(controller) {
+        if (!this.scene)
+            return;
         if (!this.intersectionsForController.has(controller)) {
             this.intersectionsForController.set(controller, []);
         }
@@ -7377,13 +7566,82 @@ class PhysicsOptions {
     }
 }
 
+/**
+ * A frozen object containing standardized string values for `event.code`.
+ * Used for desktop simulation.
+ */
+var Keycodes;
+(function (Keycodes) {
+    // --- Movement Keys ---
+    Keycodes["W_CODE"] = "KeyW";
+    Keycodes["A_CODE"] = "KeyA";
+    Keycodes["S_CODE"] = "KeyS";
+    Keycodes["D_CODE"] = "KeyD";
+    Keycodes["UP"] = "ArrowUp";
+    Keycodes["DOWN"] = "ArrowDown";
+    Keycodes["LEFT"] = "ArrowLeft";
+    Keycodes["RIGHT"] = "ArrowRight";
+    // --- Vertical Movement / Elevation ---
+    Keycodes["Q_CODE"] = "KeyQ";
+    Keycodes["E_CODE"] = "KeyE";
+    Keycodes["PAGE_UP"] = "PageUp";
+    Keycodes["PAGE_DOWN"] = "PageDown";
+    // --- Action & Interaction Keys ---
+    Keycodes["SPACE_CODE"] = "Space";
+    Keycodes["ENTER_CODE"] = "Enter";
+    Keycodes["T_CODE"] = "KeyT";
+    // --- Modifier Keys ---
+    Keycodes["LEFT_SHIFT_CODE"] = "ShiftLeft";
+    Keycodes["RIGHT_SHIFT_CODE"] = "ShiftRight";
+    Keycodes["LEFT_CTRL_CODE"] = "ControlLeft";
+    Keycodes["RIGHT_CTRL_CODE"] = "ControlRight";
+    Keycodes["LEFT_ALT_CODE"] = "AltLeft";
+    Keycodes["RIGHT_ALT_CODE"] = "AltRight";
+    Keycodes["CAPS_LOCK_CODE"] = "CapsLock";
+    // --- UI & System Keys ---
+    Keycodes["ESCAPE_CODE"] = "Escape";
+    Keycodes["TAB_CODE"] = "Tab";
+    // --- Alphabet Keys ---
+    Keycodes["B_CODE"] = "KeyB";
+    Keycodes["C_CODE"] = "KeyC";
+    Keycodes["F_CODE"] = "KeyF";
+    Keycodes["G_CODE"] = "KeyG";
+    Keycodes["H_CODE"] = "KeyH";
+    Keycodes["I_CODE"] = "KeyI";
+    Keycodes["J_CODE"] = "KeyJ";
+    Keycodes["K_CODE"] = "KeyK";
+    Keycodes["L_CODE"] = "KeyL";
+    Keycodes["M_CODE"] = "KeyM";
+    Keycodes["N_CODE"] = "KeyN";
+    Keycodes["O_CODE"] = "KeyO";
+    Keycodes["P_CODE"] = "KeyP";
+    Keycodes["R_CODE"] = "KeyR";
+    Keycodes["U_CODE"] = "KeyU";
+    Keycodes["V_CODE"] = "KeyV";
+    Keycodes["X_CODE"] = "KeyX";
+    Keycodes["Y_CODE"] = "KeyY";
+    Keycodes["Z_CODE"] = "KeyZ";
+    // --- Number Keys ---
+    Keycodes["DIGIT_0"] = "Digit0";
+    Keycodes["DIGIT_1"] = "Digit1";
+    Keycodes["DIGIT_2"] = "Digit2";
+    Keycodes["DIGIT_3"] = "Digit3";
+    Keycodes["DIGIT_4"] = "Digit4";
+    Keycodes["DIGIT_5"] = "Digit5";
+    Keycodes["DIGIT_6"] = "Digit6";
+    Keycodes["DIGIT_7"] = "Digit7";
+    Keycodes["DIGIT_8"] = "Digit8";
+    Keycodes["DIGIT_9"] = "Digit9";
+    Keycodes["BACKQUOTE"] = "Backquote";
+})(Keycodes || (Keycodes = {}));
+
 var SimulatorMode;
 (function (SimulatorMode) {
     SimulatorMode["USER"] = "User";
     SimulatorMode["POSE"] = "Navigation";
     SimulatorMode["CONTROLLER"] = "Hands";
 })(SimulatorMode || (SimulatorMode = {}));
-const NEXT_SIMULATOR_MODE = {
+const DEFAULT_MODE_TOGGLE_ORDER = {
     [SimulatorMode.USER]: SimulatorMode.POSE,
     [SimulatorMode.POSE]: SimulatorMode.CONTROLLER,
     [SimulatorMode.CONTROLLER]: SimulatorMode.USER,
@@ -7398,6 +7656,10 @@ class SimulatorOptions {
         this.initialScenePosition = { x: -1.6, y: 0.3, z: 0 };
         this.defaultMode = SimulatorMode.USER;
         this.defaultHand = Handedness.LEFT;
+        this.modeToggle = {
+            toggleKey: Keycodes.LEFT_SHIFT_CODE,
+            toggleOrder: DEFAULT_MODE_TOGGLE_ORDER,
+        };
         this.modeIndicator = {
             enabled: true,
             element: 'xrblocks-simulator-mode-indicator',
@@ -7621,11 +7883,31 @@ class XRTransitionOptions {
         this.defaultBackgroundColor = 0xffffff;
     }
 }
+const FORM_FACTORS = ['auto', 'xr', 'hud', 'vr', 'desktop', 'mobile'];
 /**
  * A central configuration class for the entire XR Blocks system. It aggregates
  * all settings and provides chainable methods for enabling common features.
  */
 class Options {
+    get formFactor() {
+        return this._formFactor;
+    }
+    /**
+     * Form factor is a preset that configures the experience for a specific
+     * device type. Currently it only controls whether the simulator is enabled
+     * and should always be autostarted.
+     */
+    set formFactor(formFactor) {
+        this._formFactor = formFactor;
+        this.enableSimulator =
+            formFactor === 'desktop' ||
+                formFactor === 'auto' ||
+                formFactor === 'mobile';
+        this.xrButton.alwaysAutostartSimulator = formFactor === 'desktop';
+        if (formFactor === 'vr') {
+            this.enableVR();
+        }
+    }
     /**
      * Constructs the Options object by merging default values with provided
      * custom options.
@@ -7701,7 +7983,26 @@ class Options {
             camera: false,
             microphone: false,
         };
+        this.xrSessionMode = 'immersive-ar';
+        this._formFactor = 'auto';
         deepMerge(this, options);
+        this.parseUrlParams();
+    }
+    parseUrlParams() {
+        const formFactorUrlParam = getUrlParameter('formFactor');
+        if (formFactorUrlParam &&
+            FORM_FACTORS.includes(formFactorUrlParam)) {
+            this.formFactor = formFactorUrlParam;
+        }
+    }
+    /**
+     * Sets the session mode to VR and disables the simulator passthrough scene.
+     */
+    enableVR() {
+        this.xrSessionMode = 'immersive-vr';
+        this.simulator.scenePath = null;
+        this.simulator.scenePlanesPath = null;
+        return this;
     }
     /**
      * Enables a standard set of options for a UI-focused experience.
@@ -7790,7 +8091,6 @@ class Options {
     enableAI() {
         this.ai.enabled = true;
         this.ai.gemini.enabled = true;
-        this.ai.gemini.live.enabled = true;
         return this;
     }
     /**
@@ -8004,75 +8304,6 @@ class SimulatorControllerState {
     }
 }
 
-/**
- * A frozen object containing standardized string values for `event.code`.
- * Used for desktop simulation.
- */
-var Keycodes;
-(function (Keycodes) {
-    // --- Movement Keys ---
-    Keycodes["W_CODE"] = "KeyW";
-    Keycodes["A_CODE"] = "KeyA";
-    Keycodes["S_CODE"] = "KeyS";
-    Keycodes["D_CODE"] = "KeyD";
-    Keycodes["UP"] = "ArrowUp";
-    Keycodes["DOWN"] = "ArrowDown";
-    Keycodes["LEFT"] = "ArrowLeft";
-    Keycodes["RIGHT"] = "ArrowRight";
-    // --- Vertical Movement / Elevation ---
-    Keycodes["Q_CODE"] = "KeyQ";
-    Keycodes["E_CODE"] = "KeyE";
-    Keycodes["PAGE_UP"] = "PageUp";
-    Keycodes["PAGE_DOWN"] = "PageDown";
-    // --- Action & Interaction Keys ---
-    Keycodes["SPACE_CODE"] = "Space";
-    Keycodes["ENTER_CODE"] = "Enter";
-    Keycodes["T_CODE"] = "KeyT";
-    // --- Modifier Keys ---
-    Keycodes["LEFT_SHIFT_CODE"] = "ShiftLeft";
-    Keycodes["RIGHT_SHIFT_CODE"] = "ShiftRight";
-    Keycodes["LEFT_CTRL_CODE"] = "ControlLeft";
-    Keycodes["RIGHT_CTRL_CODE"] = "ControlRight";
-    Keycodes["LEFT_ALT_CODE"] = "AltLeft";
-    Keycodes["RIGHT_ALT_CODE"] = "AltRight";
-    Keycodes["CAPS_LOCK_CODE"] = "CapsLock";
-    // --- UI & System Keys ---
-    Keycodes["ESCAPE_CODE"] = "Escape";
-    Keycodes["TAB_CODE"] = "Tab";
-    // --- Alphabet Keys ---
-    Keycodes["B_CODE"] = "KeyB";
-    Keycodes["C_CODE"] = "KeyC";
-    Keycodes["F_CODE"] = "KeyF";
-    Keycodes["G_CODE"] = "KeyG";
-    Keycodes["H_CODE"] = "KeyH";
-    Keycodes["I_CODE"] = "KeyI";
-    Keycodes["J_CODE"] = "KeyJ";
-    Keycodes["K_CODE"] = "KeyK";
-    Keycodes["L_CODE"] = "KeyL";
-    Keycodes["M_CODE"] = "KeyM";
-    Keycodes["N_CODE"] = "KeyN";
-    Keycodes["O_CODE"] = "KeyO";
-    Keycodes["P_CODE"] = "KeyP";
-    Keycodes["R_CODE"] = "KeyR";
-    Keycodes["U_CODE"] = "KeyU";
-    Keycodes["V_CODE"] = "KeyV";
-    Keycodes["X_CODE"] = "KeyX";
-    Keycodes["Y_CODE"] = "KeyY";
-    Keycodes["Z_CODE"] = "KeyZ";
-    // --- Number Keys ---
-    Keycodes["DIGIT_0"] = "Digit0";
-    Keycodes["DIGIT_1"] = "Digit1";
-    Keycodes["DIGIT_2"] = "Digit2";
-    Keycodes["DIGIT_3"] = "Digit3";
-    Keycodes["DIGIT_4"] = "Digit4";
-    Keycodes["DIGIT_5"] = "Digit5";
-    Keycodes["DIGIT_6"] = "Digit6";
-    Keycodes["DIGIT_7"] = "Digit7";
-    Keycodes["DIGIT_8"] = "Digit8";
-    Keycodes["DIGIT_9"] = "Digit9";
-    Keycodes["BACKQUOTE"] = "Backquote";
-})(Keycodes || (Keycodes = {}));
-
 const { A_CODE: A_CODE$1, D_CODE: D_CODE$1, E_CODE: E_CODE$1, Q_CODE: Q_CODE$1, S_CODE: S_CODE$1, W_CODE: W_CODE$1 } = Keycodes;
 const vector3$6 = new THREE.Vector3();
 const euler$2 = new THREE.Euler();
@@ -8128,7 +8359,7 @@ class SimulatorControlMode {
     }
     updateControllerPositions() {
         this.camera.updateMatrixWorld();
-        for (let i = 0; i < 2; i++) {
+        for (let i = 0; i < 2 && i < this.input.controllers.length; i++) {
             const controller = this.input.controllers[i];
             controller.position
                 .copy(this.simulatorControllerState.localControllerPositions[i])
@@ -8274,6 +8505,13 @@ function preventDefault(event) {
     event.preventDefault();
 }
 class SimulatorControls {
+    #enabled;
+    get enabled() {
+        return this.#enabled;
+    }
+    set enabled(value) {
+        this.setEnabled(value);
+    }
     /**
      * Create the simulator controls.
      * @param hands - The simulator hands manager.
@@ -8287,11 +8525,13 @@ class SimulatorControls {
         this.pointerDown = false;
         this.downKeys = new Set();
         this.simulatorMode = SimulatorMode.USER;
+        this.#enabled = true;
         this._onPointerDown = this.onPointerDown.bind(this);
         this._onPointerUp = this.onPointerUp.bind(this);
         this._onKeyDown = this.onKeyDown.bind(this);
         this._onKeyUp = this.onKeyUp.bind(this);
         this._onPointerMove = this.onPointerMove.bind(this);
+        this._onBlur = this.onBlur.bind(this);
         const toggleUserInterface = () => {
             this.userInterface.toggleInterfaceVisible();
         };
@@ -8313,6 +8553,7 @@ class SimulatorControls {
         this.setSimulatorMode(simulatorOptions.defaultMode);
         this.simulatorControllerState.currentControllerIndex =
             simulatorOptions.defaultHand === Handedness.LEFT ? 0 : 1;
+        this.simulatorOptions = simulatorOptions;
         this.connect();
     }
     connect() {
@@ -8323,30 +8564,54 @@ class SimulatorControls {
         domElement.addEventListener('pointerdown', this._onPointerDown);
         domElement.addEventListener('pointerup', this._onPointerUp);
         domElement.addEventListener('contextmenu', preventDefault);
+        window.addEventListener('blur', this._onBlur);
+        document.addEventListener('visibilitychange', this._onBlur);
     }
     update() {
         this.simulatorModeControls.update();
     }
     onPointerMove(event) {
+        if (!this.enabled)
+            return;
         this.simulatorModeControls.onPointerMove(event);
     }
     onPointerDown(event) {
+        if (!this.enabled)
+            return;
         this.simulatorModeControls.onPointerDown(event);
         this.pointerDown = true;
     }
     onPointerUp(event) {
+        if (!this.enabled)
+            return;
         this.simulatorModeControls.onPointerUp(event);
         this.pointerDown = false;
     }
     onKeyDown(event) {
+        if (!this.enabled)
+            return;
+        // On macOS, keyup events are not fired for keys held when Command (Meta)
+        // is pressed. Clear all keys to prevent stuck movement.
+        if (event.metaKey ||
+            event.code === 'MetaLeft' ||
+            event.code === 'MetaRight') {
+            this.downKeys.clear();
+            return;
+        }
         this.downKeys.add(event.code);
-        if (event.code == Keycodes.LEFT_SHIFT_CODE) {
-            this.setSimulatorMode(NEXT_SIMULATOR_MODE[this.simulatorMode]);
+        if (this.simulatorOptions &&
+            event.code === this.simulatorOptions.modeToggle.toggleKey) {
+            this.setSimulatorMode(this.simulatorOptions.modeToggle.toggleOrder[this.simulatorMode]);
         }
         this.simulatorModeControls.onKeyDown(event);
     }
     onKeyUp(event) {
+        if (!this.enabled)
+            return;
         this.downKeys.delete(event.code);
+    }
+    onBlur() {
+        this.downKeys.clear();
     }
     setSimulatorMode(mode) {
         this.simulatorMode = mode;
@@ -8365,6 +8630,15 @@ class SimulatorControls {
             }
         });
         this.modeIndicatorElement = element;
+    }
+    setEnabled(value) {
+        if (value == this.#enabled) {
+            return;
+        }
+        this.#enabled = value;
+        if (!value) {
+            this.downKeys.clear();
+        }
     }
 }
 
@@ -10207,6 +10481,7 @@ class SimulatorUser extends Script {
     static { this.dependencies = { waitFrame: WaitFrame, registry: Registry }; }
     constructor() {
         super();
+        this.name = 'Simulator User';
         this.journeyId = 0;
     }
     init({ waitFrame, registry }) {
@@ -11067,6 +11342,7 @@ class MeshDetector extends Script {
 class World extends Script {
     constructor() {
         super(...arguments);
+        this.editorIcon = 'sensors';
         /**
          * A Three.js Raycaster for performing intersection tests.
          */
@@ -11197,6 +11473,7 @@ class Simulator extends Script {
     constructor(renderMainScene) {
         super();
         this.renderMainScene = renderMainScene;
+        this.editorIcon = 'simulation';
         this.simulatorScene = new SimulatorScene();
         this.simulatorWorld = new SimulatorWorld();
         this.depth = new SimulatorDepth(this.simulatorScene);
@@ -12365,6 +12642,8 @@ class SpeechSynthesizer extends Script {
 class CoreSound extends Script {
     constructor() {
         super(...arguments);
+        this.type = 'CoreSound';
+        this.name = 'Core Sound';
         this.categoryVolumes = new CategoryVolumes();
         this.soundSynthesizer = new SoundSynthesizer();
         this.listener = new THREE.AudioListener();
@@ -12840,6 +13119,7 @@ class TextView extends View {
         this.lineHeight = 0;
         /** The total number of lines after text wrapping. */
         this.lineCount = 0;
+        this._onSyncCompleteBound = this.onSyncComplete.bind(this);
         this._initializeTextCalled = false;
         this._text = 'TextView';
         this.useSDFText = options.useSDFText ?? this.useSDFText;
@@ -13021,7 +13301,7 @@ class TextView extends View {
         if (this.useSDFText && Text && this.textObj instanceof Text) {
             this.textObj.addEventListener(
             // @ts-expect-error Missing type in Troika
-            'synccomplete', this.onSyncComplete.bind(this));
+            'synccomplete', this._onSyncCompleteBound);
             if (this.imageOverlay) {
                 new THREE.TextureLoader().load(this.imageOverlay, (texture) => {
                     texture.colorSpace = THREE.SRGBColorSpace;
@@ -13054,7 +13334,7 @@ class TextView extends View {
             this.textObj instanceof Text) {
             this.textObj.removeEventListener(
             // @ts-expect-error Missing type in Troika
-            'synccomplete', this.onSyncComplete.bind(this));
+            'synccomplete', this._onSyncCompleteBound);
         }
         super.dispose();
     }
@@ -13559,7 +13839,9 @@ class VideoView extends View {
         const videoGeometry = new THREE.PlaneGeometry(1, 1);
         const videoMaterial = new THREE.MeshBasicMaterial({
             transparent: true,
-            depthWrite: false,
+            blending: THREE.NoBlending,
+            toneMapped: false,
+            depthWrite: true,
             side: THREE.DoubleSide,
             // `map` will be set based on options.texture or during load
         });
@@ -13600,6 +13882,9 @@ class VideoView extends View {
         else if (source instanceof THREE.VideoTexture) {
             this.loadFromVideoTexture(source);
         }
+        else if (source instanceof THREE.Texture) {
+            this.loadFromTexture(source);
+        }
         else if (typeof source === 'string') {
             this.loadFromURL(source);
         }
@@ -13623,10 +13908,16 @@ class VideoView extends View {
                 console.warn('Stream is ready, but its texture is not available.');
                 return;
             }
-            this.loadFromVideoTexture(this.stream_.texture);
+            if (this.stream_.texture instanceof THREE.VideoTexture) {
+                this.loadFromVideoTexture(this.stream_.texture);
+            }
+            else {
+                this.loadFromTexture(this.stream_.texture);
+            }
             // The event from VideoStream provides the definitive aspect ratio
-            if (event.details?.aspectRatio !== undefined) {
-                this.videoAspectRatio = event.details?.aspectRatio;
+            const aspectRatio = event.aspectRatio ?? event.details?.aspectRatio;
+            if (aspectRatio !== undefined) {
+                this.videoAspectRatio = aspectRatio;
             }
             this.updateLayout();
         };
@@ -13698,7 +13989,7 @@ class VideoView extends View {
     loadFromVideoTexture(videoTextureInstance) {
         this.texture = videoTextureInstance;
         this.material.map = this.texture;
-        this.video = this.texture.image; // Underlying HTMLVideoElement
+        this.video = this.texture.image; // Underlying video
         if (this.video && this.video.videoWidth && this.video.videoHeight) {
             this.videoAspectRatio = this.video.videoWidth / this.video.videoHeight;
             this.updateLayout();
@@ -13720,6 +14011,17 @@ class VideoView extends View {
             this.videoAspectRatio = 0;
             this.updateLayout();
         }
+    }
+    /**
+     * Configures the view to use a generic texture, such as an ExternalTexture
+     * produced by WebXR camera access.
+     * @param textureInstance - The texture to display.
+     */
+    loadFromTexture(textureInstance) {
+        this.texture = textureInstance;
+        this.material.map = this.texture ?? null;
+        this.video = undefined;
+        this.updateLayout();
     }
     /** Starts video playback. */
     play() {
@@ -13806,6 +14108,9 @@ class DragManager extends Script {
         this.originalController1MatrixInverse = new THREE.Matrix4();
         this.originalScalingControllerDistance = 0.0;
         this.originalScalingObjectScale = new THREE.Vector3();
+        this.type = 'DragManager';
+        this.name = 'Drag Manager';
+        this.editorIcon = 'drag_pan';
     }
     static { this.dependencies = { input: Input, camera: THREE.Camera }; }
     static { this.IDLE = 'IDLE'; }
@@ -15148,8 +15453,8 @@ class PermissionsManager {
      * Requests permission to access the camera.
      * Opens a stream to trigger the prompt, then immediately closes it.
      */
-    async requestCameraPermission() {
-        return this.requestMediaPermission({ video: true });
+    async requestCameraPermission(options) {
+        return this.requestMediaPermission({ video: true }, options);
     }
     /**
      * Requests permission for both camera and microphone simultaneously.
@@ -15162,7 +15467,7 @@ class PermissionsManager {
      * Crucially, this stops the tracks immediately after permission is granted
      * so the hardware doesn't remain active.
      */
-    async requestMediaPermission(constraints) {
+    async requestMediaPermission(constraints, options) {
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
             return {
                 granted: false,
@@ -15177,6 +15482,9 @@ class PermissionsManager {
             return { granted: true, status: 'granted' };
         }
         catch (err) {
+            if (this.shouldAllowVideoFallback(err, constraints, options)) {
+                return { granted: true, status: 'granted' };
+            }
             // Handle common getUserMedia errors
             const status = 'denied';
             let errorMessage = 'Permission denied';
@@ -15194,11 +15502,23 @@ class PermissionsManager {
             return { granted: false, status: status, error: errorMessage };
         }
     }
+    shouldAllowVideoFallback(err, constraints, options) {
+        if (!options?.allowVideoFallback || !this.isVideoOnlyRequest(constraints)) {
+            return false;
+        }
+        return (err instanceof Error &&
+            (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError'));
+    }
+    isVideoOnlyRequest(constraints) {
+        const requestsVideo = constraints.video !== undefined && constraints.video !== false;
+        const requestsAudio = constraints.audio !== undefined && constraints.audio !== false;
+        return requestsVideo && !requestsAudio;
+    }
     /**
      * Requests multiple permissions sequentially.
      * Returns a single result: granted is true only if ALL requested permissions are granted.
      */
-    async checkAndRequestPermissions({ geolocation = false, camera = false, microphone = false, }) {
+    async checkAndRequestPermissions({ geolocation = false, camera = false, microphone = false, }, options) {
         const results = [];
         // 1. Handle Location
         if (geolocation) {
@@ -15224,7 +15544,7 @@ class PermissionsManager {
             }
             else if (micStatus === 'granted') {
                 // Only need camera
-                results.push(await this.requestCameraPermission());
+                results.push(await this.requestCameraPermission(options));
             }
             else {
                 // Need both
@@ -15237,7 +15557,7 @@ class PermissionsManager {
                 results.push({ granted: true, status: 'granted' });
             }
             else {
-                results.push(await this.requestCameraPermission());
+                results.push(await this.requestCameraPermission(options));
             }
         }
         else if (microphone) {
@@ -15310,6 +15630,17 @@ class PermissionsManager {
 }
 
 /**
+ * A node to hold all XR Blocks Systems.
+ */
+class XRSystems extends THREE.Group {
+    constructor() {
+        super(...arguments);
+        this.type = 'XRSystems';
+        this.name = 'XR Blocks Systems';
+    }
+}
+
+/**
  * Core is the central engine of the XR Blocks framework, acting as a
  * singleton manager for all XR subsystems. Its primary goal is to abstract
  * low-level WebXR and THREE.js details, providing a simplified and powerful API
@@ -15340,6 +15671,8 @@ class Core {
         this.timer = new THREE.Timer();
         /** Manages hand, mouse, gaze inputs. */
         this.input = new Input();
+        /** The main camera for rendering. */
+        this.camera = new THREE.PerspectiveCamera();
         /** The root scene graph for all objects. */
         this.scene = new THREE.Scene();
         /** Represents the user in the XR scene. */
@@ -15348,6 +15681,8 @@ class Core {
         this.ui = new UI();
         /** Manages all (spatial) audio playback. */
         this.sound = new CoreSound();
+        /** A container to hold all the systems in the scene hierarchy. */
+        this.xrSystemsGroup = new XRSystems();
         this.renderSceneBound = this.renderScene.bind(this);
         /** Manages the desktop XR simulator. */
         this.simulator = new Simulator(this.renderSceneBound);
@@ -15374,14 +15709,8 @@ class Core {
         }
         Core.instance = this;
         this.scene.name = 'XR Blocks Scene';
-        // Separate calls because spark hijacks THREE.Scene.add and only supports
-        // adding objects one at a time. See
-        // https://github.com/sparkjsdev/spark/blob/0edfc8d9232b8f6eb036d27af57dc40daf94e1f3/src/SparkRenderer.ts#L63
-        this.scene.add(this.user);
-        this.scene.add(this.dragManager);
-        this.scene.add(this.ui);
-        this.scene.add(this.sound);
-        this.scene.add(this.world);
+        this.scene.add(this.xrSystemsGroup);
+        this.xrSystemsGroup.add(this.user, this.dragManager, this.ui, this.sound, this.world);
         this.registry.register(this.registry);
         this.registry.register(this.waitFrame);
         this.registry.register(this.scene);
@@ -15396,6 +15725,7 @@ class Core {
         this.registry.register(this.scriptsManager);
         this.registry.register(this.depth);
         this.registry.register(this.world);
+        this.registry.register(this.xrSystemsGroup);
     }
     /**
      * Initializes the Core system with a given set of options. This includes
@@ -15419,10 +15749,10 @@ class Core {
             this.user.add(this.transition);
             this.registry.register(this.transition);
         }
-        this.camera = new THREE.PerspectiveCamera(
+        this.camera.copy(new THREE.PerspectiveCamera(
         /*fov=*/ 90, window.innerWidth / window.innerHeight, 
         /*near=*/ options.camera.near, 
-        /*far=*/ options.camera.far);
+        /*far=*/ options.camera.far));
         this.registry.register(this.camera, THREE.Camera);
         this.registry.register(this.camera, THREE.PerspectiveCamera);
         this.renderer = new THREE.WebGLRenderer({
@@ -15451,6 +15781,7 @@ class Core {
         if (options.controllers.enabled) {
             this.input.init({
                 scene: this.scene,
+                systemsGroup: this.xrSystemsGroup,
                 options: options,
                 renderer: this.renderer,
             });
@@ -15466,9 +15797,17 @@ class Core {
         // Sets up device camera.
         if (options.deviceCamera?.enabled) {
             this.deviceCamera = new XRDeviceCamera(options.deviceCamera);
+            this.deviceCamera.setRenderer(this.renderer);
             this.registry.register(this.deviceCamera);
         }
         const webXRRequiredFeatures = options.webxrRequiredFeatures;
+        // Use camera-access when the browser supports it.
+        if (options.deviceCamera?.enabled) {
+            if (!this.webXRSettings.optionalFeatures) {
+                this.webXRSettings.optionalFeatures = [];
+            }
+            this.webXRSettings.optionalFeatures.push('camera-access');
+        }
         this.webXRSettings.requiredFeatures = webXRRequiredFeatures;
         // Sets up depth.
         if (options.depth.enabled) {
@@ -15489,7 +15828,7 @@ class Core {
             this.user.hands = new Hands(this.input.hands);
             if (options.gestures.enabled) {
                 this.gestureRecognition = new GestureRecognition();
-                this.scene.add(this.gestureRecognition);
+                this.xrSystemsGroup.add(this.gestureRecognition);
                 this.registry.register(this.gestureRecognition);
             }
         }
@@ -15514,7 +15853,7 @@ class Core {
                 this.depth.depthMesh?.initRapierPhysics(this.physics.RAPIER, this.physics.blendedWorld);
             }
         }
-        this.webXRSessionManager = new WebXRSessionManager(this.renderer, this.webXRSettings, IMMERSIVE_AR);
+        this.webXRSessionManager = new WebXRSessionManager(this.renderer, this.webXRSettings, options.xrSessionMode);
         this.webXRSessionManager.addEventListener(WebXRSessionEventType.SESSION_START, (event) => this.onXRSessionStarted(event.session));
         this.webXRSessionManager.addEventListener(WebXRSessionEventType.SESSION_END, this.onXRSessionEnded.bind(this));
         // Sets up xrButton.
@@ -15538,7 +15877,7 @@ class Core {
         // Sets up AI services.
         if (options.ai.enabled) {
             this.registry.register(this.ai);
-            this.scene.add(this.ai);
+            this.xrSystemsGroup.add(this.ai);
             // Manually init the script in case other scripts rely on it.
             await this.scriptsManager.initScript(this.ai);
         }
@@ -15578,6 +15917,10 @@ class Core {
             this.simulator.simulatorUpdate();
         }
         this.depth.update(frame);
+        // Update XR camera fallback textures.
+        if (this.deviceCamera?.isUsingXRCameraAccess) {
+            this.deviceCamera.updateXRCamera(frame);
+        }
         if (this.lighting) {
             this.lighting.update();
         }
@@ -15638,7 +15981,7 @@ class Core {
     }
     async startSimulator() {
         this.xrButton?.domElement.remove();
-        this.scene.add(this.simulator);
+        this.xrSystemsGroup.add(this.simulator);
         await this.scriptsManager.initScript(this.simulator);
         this.onSimulatorStarted();
     }
@@ -16059,6 +16402,18 @@ const depth = core.depth;
  * A direct alias to the `Timer` instance, which manages time deltas.
  */
 const timer = core.timer;
+/**
+ * A direct alias to the `CoreSound` instance, which manages audio.
+ */
+const sound = core.sound;
+/**
+ * A direct alias to the `Input` instance, which manages inputs like controllers and hands.
+ */
+const input = core.input;
+/**
+ * A direct alias to the `THREE.PerspectiveCamera` instance.
+ */
+const camera = core.camera;
 // --- Function Aliases ---
 // These are bound shortcuts to frequently used methods for convenience.
 /**
@@ -17773,5 +18128,5 @@ class VideoFileStream extends VideoStream {
     }
 }
 
-export { AI, AIOptions, AVERAGE_IPD_METERS, ActiveControllers, Agent, AnimatableNumber, AudioListener, AudioPlayer, BACK, BackgroundMusic, CategoryVolumes, Col, Core, CoreSound, DEFAULT_DEVICE_CAMERA_HEIGHT, DEFAULT_DEVICE_CAMERA_WIDTH, DEFAULT_RGB_TO_DEPTH_PARAMS, DEVICE_CAMERA_PARAMETERS, DOWN, Depth, DepthMesh, DepthMeshOptions, DepthOptions, DepthTextures, DetectedObject, DetectedPlane, DeviceCameraOptions, DragManager, DragMode, ExitButton, FORWARD, FreestandingSlider, GazeController, Gemini, GeminiOptions, GenerateSkyboxTool, GestureRecognition, GestureRecognitionOptions, GetWeatherTool, Grid, HAND_BONE_IDX_CONNECTION_MAP, HAND_JOINT_COUNT, HAND_JOINT_IDX_CONNECTION_MAP, HAND_JOINT_NAMES, Handedness, Hands, HandsOptions, HorizontalPager, IconButton, IconView, ImageView, Input, InputOptions, Keycodes, LEFT, LEFT_VIEW_ONLY_LAYER, LabelView, Lighting, LightingOptions, LoadingSpinnerManager, MaterialSymbolsView, MeshScript, ModelLoader, ModelViewer, MouseController, NEXT_SIMULATOR_MODE, NUM_HANDS, OCCLUDABLE_ITEMS_LAYER, ObjectDetector, ObjectsOptions, OcclusionPass, OcclusionUtils, OpenAI, OpenAIOptions, Options, PageIndicator, Pager, PagerState, Panel, PanelMesh, Physics, PhysicsOptions, PinchOnButtonAction, PlaneDetector, PlanesOptions, RIGHT, RIGHT_VIEW_ONLY_LAYER, Raycaster, Registry, Reticle, ReticleOptions, RotationRaycastMesh, Row, SIMULATOR_HAND_POSE_NAMES, SIMULATOR_HAND_POSE_TO_JOINTS_LEFT, SIMULATOR_HAND_POSE_TO_JOINTS_RIGHT, SOUND_PRESETS, ScreenshotSynthesizer, Script, ScriptMixin, ScriptsManager, ScrollingTroikaTextView, SetSimulatorModeEvent, ShowHandsAction, Simulator, SimulatorCamera, SimulatorControlMode, SimulatorControllerState, SimulatorControls, SimulatorDepth, SimulatorDepthMaterial, SimulatorHandPose, SimulatorHandPoseChangeRequestEvent, SimulatorHands, SimulatorInterface, SimulatorMediaDeviceInfo, SimulatorMode, SimulatorOptions, SimulatorRenderMode, SimulatorScene, SimulatorUser, SimulatorUserAction, SketchPanel, SkyboxAgent, SoundOptions, SoundSynthesizer, SpatialAudio, SpatialPanel, SpeechRecognizer, SpeechRecognizerOptions, SpeechSynthesizer, SpeechSynthesizerOptions, SplatAnchor, StreamState, TextButton, TextScrollerState, TextView, Tool, UI, UI_OVERLAY_LAYER, UP, UX, User, VIEW_DEPTH_GAP, VerticalPager, VideoFileStream, VideoStream, VideoView, View, VolumeCategory, WaitFrame, WalkTowardsPanelAction, World, WorldOptions, XRButton, XRDeviceCamera, XREffects, XRPass, XRTransitionOptions, XR_BLOCKS_ASSETS_PATH, ZERO_VECTOR3, add, ai, callInitWithDependencyInjection, clamp, clampRotationToAngle, core, cropImage, depth, extractYaw, getCameraParametersSnapshot, getColorHex, getDeltaTime, getDeviceCameraClipFromView, getDeviceCameraWorldFromClip, getDeviceCameraWorldFromView, getElapsedTime, getUrlParamBool, getUrlParamFloat, getUrlParamInt, getUrlParameter, getVec4ByColorString, getXrCameraLeft, getXrCameraRight, init, initScript, intrinsicsToProjectionMatrix, lerp, loadStereoImageAsTextures, loadingSpinnerManager, lookAtRotation, objectIsDescendantOf, parseBase64DataURL, placeObjectAtIntersectionFacingTarget, print, scene, showOnlyInLeftEye, showOnlyInRightEye, showReticleOnDepthMesh, timer, transformRgbUvToWorld, traverseUtil, uninitScript, urlParams, user, world, xrDepthMeshOptions, xrDepthMeshPhysicsOptions, xrDepthMeshVisualizationOptions, xrDeviceCameraEnvironmentContinuousOptions, xrDeviceCameraEnvironmentOptions, xrDeviceCameraUserContinuousOptions, xrDeviceCameraUserOptions };
+export { AI, AIOptions, AVERAGE_IPD_METERS, ActiveControllers, Agent, AnimatableNumber, AudioListener, AudioPlayer, BACK, BackgroundMusic, CategoryVolumes, Col, Core, CoreSound, DEFAULT_DEVICE_CAMERA_HEIGHT, DEFAULT_DEVICE_CAMERA_WIDTH, DEFAULT_RGB_TO_DEPTH_PARAMS, DEVICE_CAMERA_PARAMETERS, DOWN, Depth, DepthMesh, DepthMeshOptions, DepthOptions, DepthTextures, DetectedObject, DetectedPlane, DeviceCameraOptions, DragManager, DragMode, ExitButton, FORWARD, FreestandingSlider, GEMINI_DEFAULT_FLASH_MODEL, GEMINI_DEFAULT_LIVE_MODEL, GazeController, Gemini, GeminiOptions, GenerateSkyboxTool, GestureRecognition, GestureRecognitionOptions, GetWeatherTool, Grid, HAND_BONE_IDX_CONNECTION_MAP, HAND_JOINT_COUNT, HAND_JOINT_IDX_CONNECTION_MAP, HAND_JOINT_NAMES, Handedness, Hands, HandsOptions, HorizontalPager, IconButton, IconView, ImageView, Input, InputOptions, Keycodes, LEFT, LEFT_VIEW_ONLY_LAYER, LabelView, Lighting, LightingOptions, LoadingSpinnerManager, MaterialSymbolsView, MeshScript, ModelLoader, ModelViewer, MouseController, NUM_HANDS, OCCLUDABLE_ITEMS_LAYER, ObjectDetector, ObjectsOptions, OcclusionPass, OcclusionUtils, OpenAI, OpenAIOptions, Options, PageIndicator, Pager, PagerState, Panel, PanelMesh, Physics, PhysicsOptions, PinchOnButtonAction, PlaneDetector, PlanesOptions, RIGHT, RIGHT_VIEW_ONLY_LAYER, Raycaster, Registry, Reticle, ReticleOptions, Reticles, RotationRaycastMesh, Row, SIMULATOR_HAND_POSE_NAMES, SIMULATOR_HAND_POSE_TO_JOINTS_LEFT, SIMULATOR_HAND_POSE_TO_JOINTS_RIGHT, SOUND_PRESETS, ScreenshotSynthesizer, Script, ScriptMixin, ScriptsManager, ScrollingTroikaTextView, SetSimulatorModeEvent, ShowHandsAction, Simulator, SimulatorCamera, SimulatorControlMode, SimulatorControllerState, SimulatorControls, SimulatorDepth, SimulatorDepthMaterial, SimulatorHandPose, SimulatorHandPoseChangeRequestEvent, SimulatorHands, SimulatorInterface, SimulatorMediaDeviceInfo, SimulatorMode, SimulatorOptions, SimulatorRenderMode, SimulatorScene, SimulatorUser, SimulatorUserAction, SketchPanel, SkyboxAgent, SoundOptions, SoundSynthesizer, SparkRendererHolder, SpatialAudio, SpatialPanel, SpeechRecognizer, SpeechRecognizerOptions, SpeechSynthesizer, SpeechSynthesizerOptions, SplatAnchor, StreamState, TextButton, TextScrollerState, TextView, Tool, UI, UI_OVERLAY_LAYER, UP, UX, User, VIEW_DEPTH_GAP, VerticalPager, VideoFileStream, VideoStream, VideoView, View, VolumeCategory, WaitFrame, WalkTowardsPanelAction, World, WorldOptions, XRButton, XRDeviceCamera, XREffects, XRPass, XRTransitionOptions, XR_BLOCKS_ASSETS_PATH, ZERO_VECTOR3, add, ai, callInitWithDependencyInjection, camera, clamp, clampRotationToAngle, core, cropImage, depth, extractYaw, getCameraParametersSnapshot, getColorHex, getDeltaTime, getDeviceCameraClipFromView, getDeviceCameraWorldFromClip, getDeviceCameraWorldFromView, getElapsedTime, getUrlParamBool, getUrlParamFloat, getUrlParamInt, getUrlParameter, getVec4ByColorString, getXrCameraLeft, getXrCameraRight, init, initScript, input, intrinsicsToProjectionMatrix, lerp, loadStereoImageAsTextures, loadingSpinnerManager, lookAtRotation, objectIsDescendantOf, parseBase64DataURL, placeObjectAtIntersectionFacingTarget, print, scene, showOnlyInLeftEye, showOnlyInRightEye, showReticleOnDepthMesh, sound, timer, transformRgbUvToWorld, traverseUtil, uninitScript, urlParams, user, world, xrDepthMeshOptions, xrDepthMeshPhysicsOptions, xrDepthMeshVisualizationOptions, xrDeviceCameraEnvironmentContinuousOptions, xrDeviceCameraEnvironmentOptions, xrDeviceCameraUserContinuousOptions, xrDeviceCameraUserOptions };
 //# sourceMappingURL=xrblocks.js.map
