@@ -30,6 +30,8 @@ type XRDeviceCameraDetails = VideoStreamDetails & {
  * and reports its state using VideoStream's event model.
  */
 export class XRDeviceCamera extends VideoStream<XRDeviceCameraDetails> {
+  private static readonly XR_CAMERA_ACCESS_TIMEOUT_MS = 5000;
+
   simulatorCamera?: SimulatorCamera;
   rgbToDepthParams: RgbToDepthParams;
   protected videoConstraints_: MediaTrackConstraints;
@@ -40,6 +42,7 @@ export class XRDeviceCamera extends VideoStream<XRDeviceCameraDetails> {
   private renderer_?: THREE.WebGLRenderer;
   private useXRCameraAccess_ = false;
   private xrCameraTexture_?: THREE.ExternalTexture;
+  private xrCameraAccessTimeout_: ReturnType<typeof setTimeout> | null = null;
 
   /**
    * @param options - The configuration options.
@@ -87,26 +90,26 @@ export class XRDeviceCamera extends VideoStream<XRDeviceCameraDetails> {
    */
   async init() {
     this.useXRCameraAccess_ = false;
+    this.clearXRCameraAccessTimeout_();
     this.setState_(StreamState.INITIALIZING);
     try {
       this.availableDevices_ = await this.getAvailableVideoDevices();
 
       if (this.availableDevices_.length > 0) {
         await this.initStream_();
+      } else if (this.renderer_) {
+        this.startXRCameraAccessFallback_('No video devices found.');
+        return;
       } else {
         this.setState_(StreamState.NO_DEVICES_FOUND);
         console.warn('No video devices found.');
       }
     } catch (error) {
       if (this.renderer_) {
-        console.warn(
-          'Camera initialization failed. ' +
-            'Falling back to WebXR Raw Camera Access API.',
+        this.startXRCameraAccessFallback_(
+          'Camera initialization failed.',
           error
         );
-        this.useXRCameraAccess_ = true;
-        this.loaded = false;
-        this.setState_(StreamState.INITIALIZING, {force: true});
         return;
       }
       this.setState_(StreamState.ERROR, {error: error as Error});
@@ -351,6 +354,7 @@ export class XRDeviceCamera extends VideoStream<XRDeviceCameraDetails> {
       this.texture = this.xrCameraTexture_;
 
       if (!this.loaded) {
+        this.clearXRCameraAccessTimeout_();
         this.loaded = true;
         this.setState_(StreamState.STREAMING, {
           force: true,
@@ -367,5 +371,57 @@ export class XRDeviceCamera extends VideoStream<XRDeviceCameraDetails> {
   registerSimulatorCamera(simulatorCamera: SimulatorCamera) {
     this.simulatorCamera = simulatorCamera;
     this.init();
+  }
+
+  private startXRCameraAccessFallback_(reason: string, error?: unknown) {
+    if (!this.isXRCameraAccessGranted_()) {
+      this.useXRCameraAccess_ = false;
+      this.loaded = false;
+      this.setState_(StreamState.NO_DEVICES_FOUND, {force: true});
+      console.warn(
+        `${reason} WebXR Raw Camera Access API is not available in this session.`,
+        error
+      );
+      return;
+    }
+
+    console.warn(
+      `${reason} Falling back to WebXR Raw Camera Access API.`,
+      error
+    );
+    this.useXRCameraAccess_ = true;
+    this.loaded = false;
+    this.setState_(StreamState.INITIALIZING, {force: true});
+    this.clearXRCameraAccessTimeout_();
+    this.xrCameraAccessTimeout_ = setTimeout(() => {
+      if (!this.useXRCameraAccess_ || this.loaded) return;
+      this.useXRCameraAccess_ = false;
+      this.setState_(StreamState.NO_DEVICES_FOUND, {force: true});
+      console.warn(
+        'WebXR Raw Camera Access API did not provide frames in time.'
+      );
+    }, XRDeviceCamera.XR_CAMERA_ACCESS_TIMEOUT_MS);
+  }
+
+  private isXRCameraAccessGranted_() {
+    const session = this.renderer_?.xr.getSession() as
+      | (XRSession & {enabledFeatures?: string[]})
+      | undefined;
+
+    if (!session) {
+      return true;
+    }
+
+    if (!('enabledFeatures' in session) || !session.enabledFeatures) {
+      return true;
+    }
+
+    return session.enabledFeatures.includes('camera-access');
+  }
+
+  private clearXRCameraAccessTimeout_() {
+    if (!this.xrCameraAccessTimeout_) return;
+    clearTimeout(this.xrCameraAccessTimeout_);
+    this.xrCameraAccessTimeout_ = null;
   }
 }

@@ -130,6 +130,10 @@ export class WebXRSessionManager extends THREE.EventDispatcher<WebXRSessionManag
     return this.xrModeSupported;
   }
 
+  public getSessionOptions() {
+    return this.sessionOptions;
+  }
+
   /** Internal callback for when a session successfully starts. */
   private async onSessionStartedInternal(session: XRSession) {
     session.addEventListener('end', this.onSessionEndedBound);

@@ -96,9 +96,15 @@ export class XRButton {
     button.innerHTML = this.startText;
     button.disabled = false;
 
+    const allowsVideoFallback = this.sessionManager
+      .getSessionOptions()
+      ?.optionalFeatures?.includes('camera-access');
+
     button.onclick = () => {
       this.permissionsManager
-        .checkAndRequestPermissions(this.permissions)
+        .checkAndRequestPermissions(this.permissions, {
+          allowVideoFallback: allowsVideoFallback,
+        })
         .then((result) => {
           if (result.granted) {
             this.sessionManager.startSession();

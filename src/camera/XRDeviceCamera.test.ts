@@ -29,10 +29,13 @@ function createMockStream(): MediaStream {
   } as unknown as MediaStream;
 }
 
-function createMockRenderer(mode: XRSessionMode): WebGLRenderer {
+function createMockRenderer(
+  mode: XRSessionMode,
+  enabledFeatures?: string[]
+): WebGLRenderer {
   return {
     xr: {
-      getSession: () => ({mode}) as unknown as XRSession,
+      getSession: () => ({mode, enabledFeatures}) as unknown as XRSession,
     },
   } as unknown as WebGLRenderer;
 }
@@ -184,7 +187,7 @@ describe('XRDeviceCamera', () => {
     );
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    camera.setRenderer(createMockRenderer('immersive-ar'));
+    camera.setRenderer(createMockRenderer('immersive-ar', ['camera-access']));
 
     await expect(camera.init()).resolves.toBeUndefined();
     expect(camera.isUsingXRCameraAccess).toBe(true);
@@ -200,7 +203,7 @@ describe('XRDeviceCamera', () => {
     );
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    camera.setRenderer(createMockRenderer('immersive-vr'));
+    camera.setRenderer(createMockRenderer('immersive-vr', ['camera-access']));
 
     await expect(camera.init()).resolves.toBeUndefined();
     expect(camera.isUsingXRCameraAccess).toBe(true);
@@ -221,5 +224,61 @@ describe('XRDeviceCamera', () => {
     expect(camera.state).toBe(StreamState.ERROR);
 
     errorSpy.mockRestore();
+  });
+
+  it('falls back to XR camera access when no video devices are enumerated', async () => {
+    vi.mocked(navigator.mediaDevices.enumerateDevices).mockResolvedValue([]);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    camera.setRenderer(createMockRenderer('immersive-ar', ['camera-access']));
+
+    await expect(camera.init()).resolves.toBeUndefined();
+    expect(camera.isUsingXRCameraAccess).toBe(true);
+    expect(camera.state).toBe(StreamState.INITIALIZING);
+
+    warnSpy.mockRestore();
+  });
+
+  it('reports NO_DEVICES_FOUND when no devices and no renderer', async () => {
+    vi.mocked(navigator.mediaDevices.enumerateDevices).mockResolvedValue([]);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await expect(camera.init()).resolves.toBeUndefined();
+    expect(camera.isUsingXRCameraAccess).toBe(false);
+    expect(camera.state).toBe(StreamState.NO_DEVICES_FOUND);
+
+    warnSpy.mockRestore();
+  });
+
+  it('reports NO_DEVICES_FOUND when camera-access was not granted', async () => {
+    vi.mocked(navigator.mediaDevices.enumerateDevices).mockResolvedValue([]);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    camera.setRenderer(createMockRenderer('immersive-ar', []));
+
+    await expect(camera.init()).resolves.toBeUndefined();
+    expect(camera.isUsingXRCameraAccess).toBe(false);
+    expect(camera.state).toBe(StreamState.NO_DEVICES_FOUND);
+
+    warnSpy.mockRestore();
+  });
+
+  it('times out XR camera fallback when no frames arrive', async () => {
+    vi.useFakeTimers();
+    vi.mocked(navigator.mediaDevices.enumerateDevices).mockResolvedValue([]);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    camera.setRenderer(createMockRenderer('immersive-ar', ['camera-access']));
+
+    await expect(camera.init()).resolves.toBeUndefined();
+    expect(camera.state).toBe(StreamState.INITIALIZING);
+
+    await vi.advanceTimersByTimeAsync(5000);
+
+    expect(camera.isUsingXRCameraAccess).toBe(false);
+    expect(camera.state).toBe(StreamState.NO_DEVICES_FOUND);
+
+    warnSpy.mockRestore();
+    vi.useRealTimers();
   });
 });

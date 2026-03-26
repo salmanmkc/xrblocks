@@ -7,6 +7,10 @@ export interface PermissionResult {
   error?: string;
 }
 
+export interface PermissionRequestOptions {
+  allowVideoFallback?: boolean;
+}
+
 /**
  * A utility class to manage and request browser permissions for
  * Location, Camera, and Microphone.
@@ -62,8 +66,10 @@ export class PermissionsManager {
    * Requests permission to access the camera.
    * Opens a stream to trigger the prompt, then immediately closes it.
    */
-  async requestCameraPermission(): Promise<PermissionResult> {
-    return this.requestMediaPermission({video: true});
+  async requestCameraPermission(
+    options?: PermissionRequestOptions
+  ): Promise<PermissionResult> {
+    return this.requestMediaPermission({video: true}, options);
   }
 
   /**
@@ -79,7 +85,8 @@ export class PermissionsManager {
    * so the hardware doesn't remain active.
    */
   private async requestMediaPermission(
-    constraints: MediaStreamConstraints
+    constraints: MediaStreamConstraints,
+    options?: PermissionRequestOptions
   ): Promise<PermissionResult> {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       return {
@@ -97,6 +104,10 @@ export class PermissionsManager {
 
       return {granted: true, status: 'granted'};
     } catch (err) {
+      if (this.shouldAllowVideoFallback(err, constraints, options)) {
+        return {granted: true, status: 'granted'};
+      }
+
       // Handle common getUserMedia errors
       const status: PermissionState = 'denied';
       let errorMessage = 'Permission denied';
@@ -119,19 +130,45 @@ export class PermissionsManager {
     }
   }
 
+  private shouldAllowVideoFallback(
+    err: unknown,
+    constraints: MediaStreamConstraints,
+    options?: PermissionRequestOptions
+  ) {
+    if (!options?.allowVideoFallback || !this.isVideoOnlyRequest(constraints)) {
+      return false;
+    }
+
+    return (
+      err instanceof Error &&
+      (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError')
+    );
+  }
+
+  private isVideoOnlyRequest(constraints: MediaStreamConstraints) {
+    const requestsVideo =
+      constraints.video !== undefined && constraints.video !== false;
+    const requestsAudio =
+      constraints.audio !== undefined && constraints.audio !== false;
+    return requestsVideo && !requestsAudio;
+  }
+
   /**
    * Requests multiple permissions sequentially.
    * Returns a single result: granted is true only if ALL requested permissions are granted.
    */
-  async checkAndRequestPermissions({
-    geolocation = false,
-    camera = false,
-    microphone = false,
-  }: {
-    geolocation?: boolean;
-    camera?: boolean;
-    microphone?: boolean;
-  }): Promise<PermissionResult> {
+  async checkAndRequestPermissions(
+    {
+      geolocation = false,
+      camera = false,
+      microphone = false,
+    }: {
+      geolocation?: boolean;
+      camera?: boolean;
+      microphone?: boolean;
+    },
+    options?: PermissionRequestOptions
+  ): Promise<PermissionResult> {
     const results: PermissionResult[] = [];
 
     // 1. Handle Location
@@ -157,7 +194,7 @@ export class PermissionsManager {
         results.push(await this.requestMicrophonePermission());
       } else if (micStatus === 'granted') {
         // Only need camera
-        results.push(await this.requestCameraPermission());
+        results.push(await this.requestCameraPermission(options));
       } else {
         // Need both
         results.push(await this.requestAVPermission());
@@ -167,7 +204,7 @@ export class PermissionsManager {
       if (status === 'granted') {
         results.push({granted: true, status: 'granted'});
       } else {
-        results.push(await this.requestCameraPermission());
+        results.push(await this.requestCameraPermission(options));
       }
     } else if (microphone) {
       const status = await this.checkPermissionStatus('microphone');
