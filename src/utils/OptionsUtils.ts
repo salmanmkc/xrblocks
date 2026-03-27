@@ -59,6 +59,11 @@ export function deepMerge<T extends object, U extends object>(
       ) {
         // If both values are objects, recurse
         deepMerge(val1, val2);
+      } else if (val2 && typeof val2 === 'object') {
+        // Clone val2 if val1 is not an object
+        const clone = Array.isArray(val2) ? [] : {};
+        deepMerge(clone, val2);
+        merged[key] = clone;
       } else {
         // Otherwise, overwrite
         merged[key] = val2;
