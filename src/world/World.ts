@@ -1,7 +1,12 @@
 import * as THREE from 'three';
 
+import {AI} from '../ai/AI';
+import {Gemini} from '../ai/Gemini';
+import {XRDeviceCamera} from '../camera/XRDeviceCamera';
 import {Script} from '../core/Script';
+import {Registry} from '../core/components/Registry';
 import {placeObjectAtIntersectionFacingTarget} from '../utils/ObjectPlacement';
+import {parseBase64DataURL} from '../utils/utils';
 
 import {ObjectDetector} from './objects/ObjectDetector';
 import {PlaneDetector} from './planes/PlaneDetector';
@@ -22,6 +27,7 @@ export class World extends Script {
   static dependencies = {
     options: WorldOptions,
     camera: THREE.Camera,
+    registry: Registry,
   };
 
   editorIcon = 'sensors';
@@ -63,6 +69,7 @@ export class World extends Script {
   private raycaster = new THREE.Raycaster();
 
   private camera!: THREE.Camera;
+  private registry!: Registry;
 
   // Whether we need to initiate a room capture.
   private needsRoomCapture = false;
@@ -74,12 +81,15 @@ export class World extends Script {
   override async init({
     options,
     camera,
+    registry,
   }: {
     options: WorldOptions;
     camera: THREE.Camera;
+    registry: Registry;
   }) {
     this.options = options;
     this.camera = camera;
+    this.registry = registry;
 
     if (!this.options || !this.options.enabled) {
       return;
@@ -195,4 +205,96 @@ export class World extends Script {
     this.planes?.showDebugVisualizations(visible);
     this.objects?.showDebugVisualizations(visible);
   }
+
+  /**
+   * Asks the AI a question about what the device camera currently sees.
+   *
+   * Resolves an image source in this priority order:
+   *   1. `options.image` (pre-stripped base64 + MIME type),
+   *   2. a fresh snapshot from the registered `XRDeviceCamera`.
+   *
+   * If an image is available and the active model is Gemini, sends a multipart
+   * request (image + prompt). Otherwise logs a warning and falls back to a
+   * text-only `ai.query({prompt})` call.
+   *
+   * Throws if no `AI` is registered.
+   *
+   * @param prompt - The natural-language question to ask.
+   * @param options - Optional pre-supplied image data.
+   * @returns The model's text response, or null if the model returned none.
+   */
+  async askAboutScene(
+    prompt: string,
+    options?: AskAboutSceneOptions
+  ): Promise<string | null> {
+    const ai = this.registry?.get(AI);
+    if (!ai) {
+      throw new Error(
+        'world.askAboutScene: no AI is registered. Call options.enableAI() first.'
+      );
+    }
+
+    let image = options?.image ?? null;
+    if (!image) {
+      const camera = this.registry.get(XRDeviceCamera);
+      if (camera) {
+        const dataUrl = await camera.getSnapshot({outputFormat: 'base64'});
+        if (dataUrl) {
+          const {strippedBase64, mimeType} = parseBase64DataURL(dataUrl);
+          image = {
+            data: strippedBase64,
+            mimeType: mimeType ?? 'image/png',
+          };
+        } else {
+          console.warn(
+            'world.askAboutScene: device camera snapshot was unavailable; ' +
+              'falling back to text-only query.'
+          );
+        }
+      } else {
+        console.warn(
+          'world.askAboutScene: no XRDeviceCamera is registered; ' +
+            'falling back to text-only query. Call options.enableCamera() ' +
+            'to enable vision answers.'
+        );
+      }
+    }
+
+    if (image && ai.model instanceof Gemini) {
+      const response = await ai.model.query({
+        type: 'multiPart',
+        parts: [
+          {inlineData: {mimeType: image.mimeType, data: image.data}},
+          {text: prompt},
+        ],
+      });
+      return response?.text ?? null;
+    }
+
+    if (image) {
+      console.warn(
+        'world.askAboutScene: active AI model does not support vision input; ' +
+          'falling back to text-only query.'
+      );
+    }
+
+    const response = await ai.query({prompt});
+    if (!response) return null;
+    if (typeof response === 'string') return response;
+    return response.text ?? null;
+  }
+}
+
+/**
+ * Options accepted by {@link World.askAboutScene}.
+ */
+export interface AskAboutSceneOptions {
+  /**
+   * Pre-supplied image to send to the model. If omitted, a snapshot is captured
+   * from the registered {@link XRDeviceCamera}.
+   *
+   * - `data`: stripped base64 (no `data:` URL prefix).
+   * - `mimeType`: e.g. `image/png`, `image/jpeg`.
+   */
+  image?: {data: string; mimeType: string};
 }

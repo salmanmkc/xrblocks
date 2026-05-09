@@ -1,0 +1,649 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <title>Ask About Scene | XR Blocks</title>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, user-scalable=no"
+    />
+    <link type="text/css" rel="stylesheet" href="../main.css" />
+    <script>
+      window.litDisableBundleWarning = true;
+    </script>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.182.0/build/three.module.js",
+          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.182.0/examples/jsm/",
+          "troika-three-text": "https://cdn.jsdelivr.net/gh/protectwise/troika@028b81cf308f0f22e5aa8e78196be56ec1997af5/packages/troika-three-text/src/index.js",
+          "troika-three-utils": "https://cdn.jsdelivr.net/gh/protectwise/troika@v0.52.4/packages/troika-three-utils/src/index.js",
+          "troika-worker-utils": "https://cdn.jsdelivr.net/gh/protectwise/troika@v0.52.4/packages/troika-worker-utils/src/index.js",
+          "bidi-js": "https://esm.sh/bidi-js@%5E1.0.2?target=es2022",
+          "webgl-sdf-generator": "https://esm.sh/webgl-sdf-generator@1.1.1/es2022/webgl-sdf-generator.mjs",
+          "lit": "https://cdn.jsdelivr.net/gh/lit/dist@3/core/lit-core.min.js",
+          "lit/": "https://esm.run/lit@3/",
+          "xrblocks": "../../build/xrblocks.js",
+          "@google/genai": "https://cdn.jsdelivr.net/npm/@google/genai/+esm",
+          "marked": "https://esm.sh/marked@14",
+          "dompurify": "https://esm.sh/dompurify@3"
+        }
+      }
+    </script>
+    <style>
+      .ask-bar {
+        position: fixed;
+        bottom: 24px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 10;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        background: rgba(20, 20, 20, 0.85);
+        padding: 14px 18px;
+        border-radius: 12px;
+        font-family: system-ui, sans-serif;
+        color: #eee;
+        max-width: 520px;
+        width: 90%;
+      }
+      .ask-bar button {
+        text-transform: none;
+      }
+      .ask-row {
+        display: flex;
+        gap: 8px;
+      }
+      .ask-bar input {
+        flex: 1;
+        padding: 8px 12px;
+        border-radius: 8px;
+        border: 1px solid #555;
+        background: #111;
+        color: #eee;
+        font-size: 14px;
+      }
+      .ask-bar .mic-btn {
+        padding: 8px 12px;
+        border-radius: 8px;
+        border: 1px solid #444;
+        background: #2a2a2a;
+        color: white;
+        cursor: pointer;
+        font-size: 16px;
+      }
+      .ask-bar .mic-btn:hover {
+        background: #3a3a3a;
+      }
+      .ask-bar .mic-btn.listening {
+        background: #c0392b;
+        border-color: #c0392b;
+        animation: pulse 1s infinite;
+      }
+      .ask-bar .stop-btn {
+        padding: 8px 12px;
+        border-radius: 8px;
+        border: none;
+        background: #c0392b;
+        color: white;
+        cursor: pointer;
+        font-size: 14px;
+      }
+      .ask-bar .stop-btn:hover {
+        background: #d44a3a;
+      }
+      @keyframes pulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.6;
+        }
+      }
+      .ask-bar button {
+        padding: 8px 16px;
+        border-radius: 8px;
+        border: none;
+        background: #4a90e2;
+        color: white;
+        cursor: pointer;
+        font-size: 14px;
+      }
+      .ask-bar button:disabled {
+        background: #555;
+        cursor: wait;
+      }
+      .ask-answer {
+        font-size: 14px;
+        line-height: 1.4;
+        color: #ddd;
+        max-height: 30vh;
+        overflow-y: auto;
+      }
+      .ask-answer p,
+      .ask-answer ul,
+      .ask-answer ol {
+        margin: 0 0 0.4em 0;
+      }
+      .ask-answer ul,
+      .ask-answer ol {
+        padding-left: 1.2em;
+      }
+      .ask-answer.placeholder {
+        color: #888;
+        font-style: italic;
+      }
+      .chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      @media (max-width: 480px) {
+        .ask-bar .chips {
+          display: grid;
+          grid-template-columns: repeat(3, 1fr);
+        }
+        .ask-bar .chip {
+          text-align: center;
+        }
+      }
+      .ask-bar .chip {
+        padding: 6px 12px;
+        border-radius: 999px;
+        border: 1px solid #555;
+        background: #2a2a2a;
+        color: #ddd;
+        font-size: 12px;
+        cursor: pointer;
+        font-family: inherit;
+      }
+      .ask-bar .chip:hover {
+        background: #3a3a3a;
+        border-color: #4a90e2;
+      }
+      .tts-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 12px;
+        color: #aaa;
+      }
+      .tts-row select {
+        padding: 4px 8px;
+        border-radius: 6px;
+        border: 1px solid #444;
+        background: #111;
+        color: #ddd;
+        font-family: inherit;
+        font-size: 12px;
+      }
+      @media (max-height: 500px) {
+        .ask-bar {
+          bottom: 8px;
+          padding: 8px 12px;
+          gap: 6px;
+          max-width: 600px;
+        }
+        .ask-answer {
+          max-height: 18vh;
+          font-size: 13px;
+        }
+        .ask-bar .chip {
+          padding: 4px 10px;
+          font-size: 11px;
+        }
+        .tts-row label {
+          display: none;
+        }
+      }
+      .key-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 100;
+        background: rgba(0, 0, 0, 0.85);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-family: system-ui, sans-serif;
+        color: #eee;
+      }
+      .key-card {
+        background: #1a1a1a;
+        padding: 24px 28px;
+        border-radius: 12px;
+        max-width: 440px;
+        width: 90%;
+        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+      }
+      .key-card h2 {
+        margin: 0 0 8px;
+        font-size: 18px;
+      }
+      .key-card p {
+        margin: 0 0 16px;
+        font-size: 13px;
+        color: #aaa;
+        line-height: 1.4;
+      }
+      .key-card a {
+        color: #4a90e2;
+      }
+      .key-card input {
+        width: 100%;
+        padding: 10px 12px;
+        border-radius: 8px;
+        border: 1px solid #555;
+        background: #111;
+        color: #eee;
+        font-size: 14px;
+        box-sizing: border-box;
+        margin-bottom: 12px;
+      }
+      .key-card button {
+        padding: 10px 20px;
+        border-radius: 8px;
+        border: none;
+        background: #4a90e2;
+        color: white;
+        cursor: pointer;
+        font-size: 14px;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div id="keyOverlay" class="key-overlay" style="display: none">
+      <div class="key-card">
+        <h2>Gemini API key</h2>
+        <p>
+          This sample needs a Gemini API key. Get one from
+          <a
+            href="https://aistudio.google.com/app/apikey"
+            target="_blank"
+            rel="noopener"
+            >aistudio.google.com</a
+          >. The key is saved in your browser's localStorage and never sent
+          anywhere except Google.
+        </p>
+        <input id="keyInput" type="password" placeholder="AIza..." />
+        <button id="keySave">save and reload</button>
+      </div>
+    </div>
+
+    <div class="ask-bar">
+      <div class="chips" id="chips">
+        <button
+          class="chip"
+          data-prompt="describe what you see in one sentence"
+        >
+          describe
+        </button>
+        <button class="chip" data-prompt="list the objects in view">
+          objects
+        </button>
+        <button class="chip" data-prompt="read any visible text">
+          read text
+        </button>
+        <button
+          class="chip"
+          data-prompt="estimate the calories of any food in view"
+        >
+          calories
+        </button>
+        <button
+          class="chip"
+          data-prompt="write a short poem about what you see"
+        >
+          poem
+        </button>
+      </div>
+      <div class="ask-row">
+        <input
+          id="prompt"
+          type="text"
+          placeholder="ask anything about what the camera sees..."
+        />
+        <button
+          id="mic"
+          class="mic-btn"
+          type="button"
+          aria-label="Ask by voice"
+          title="speak"
+        >
+          🎤
+        </button>
+        <button
+          id="stopTts"
+          class="stop-btn"
+          type="button"
+          aria-label="Stop speaking"
+          hidden
+        >
+          ⏹ stop
+        </button>
+        <button id="go">ask</button>
+      </div>
+      <div
+        id="answer"
+        class="ask-answer placeholder"
+        role="status"
+        aria-live="polite"
+      >
+        Pick a suggestion or type your own question.
+      </div>
+      <div class="tts-row">
+        <label for="ttsEngine">voice:</label>
+        <select id="ttsEngine">
+          <option value="browser">browser (instant)</option>
+          <option value="gemini">gemini (better, slower, 10/day)</option>
+          <option value="off">off</option>
+        </select>
+      </div>
+    </div>
+
+    <script>
+      // Resolve gemini key: ?key= URL param > localStorage > overlay prompt.
+      (function () {
+        const STORAGE_KEY = 'gemini-api-key';
+        const params = new URLSearchParams(window.location.search);
+        if (params.has('key')) {
+          window.localStorage.setItem(STORAGE_KEY, params.get('key'));
+          return;
+        }
+        const stored = window.localStorage.getItem(STORAGE_KEY);
+        if (stored) {
+          params.set('key', stored);
+          const newUrl =
+            window.location.pathname +
+            '?' +
+            params.toString() +
+            window.location.hash;
+          window.history.replaceState(null, '', newUrl);
+          return;
+        }
+        const overlay = document.getElementById('keyOverlay');
+        const input = document.getElementById('keyInput');
+        const save = document.getElementById('keySave');
+        overlay.style.display = 'flex';
+        const submit = () => {
+          const k = input.value.trim();
+          if (!k) return;
+          window.localStorage.setItem(STORAGE_KEY, k);
+          params.set('key', k);
+          window.location.search = '?' + params.toString();
+        };
+        save.addEventListener('click', submit);
+        input.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') submit();
+        });
+        input.focus();
+      })();
+    </script>
+
+    <script type="module">
+      import * as xb from 'xrblocks';
+      import {marked} from 'marked';
+      import DOMPurify from 'dompurify';
+
+      class MainScript extends xb.Script {
+        init() {
+          const promptInput = document.getElementById('prompt');
+          const button = document.getElementById('go');
+          const answerEl = document.getElementById('answer');
+
+          let preferredVoice;
+          const pickVoice = () => {
+            const voices = window.speechSynthesis?.getVoices() ?? [];
+            if (!voices.length) return;
+            const order = [
+              (v) => /Google US English/i.test(v.name),
+              (v) => /Google.*english/i.test(v.name),
+              (v) => /Samantha|Karen|Daniel|Moira|Tessa/i.test(v.name),
+              (v) => /Microsoft.*(Aria|Jenny|Guy)/i.test(v.name),
+              (v) => v.lang.startsWith('en') && !v.localService,
+              (v) => v.lang.startsWith('en'),
+            ];
+            for (const test of order) {
+              const v = voices.find(test);
+              if (v) {
+                preferredVoice = v;
+                return;
+              }
+            }
+          };
+          if (window.speechSynthesis) {
+            pickVoice();
+            window.speechSynthesis.onvoiceschanged = pickVoice;
+          }
+
+          const renderMarkdown = (text) =>
+            DOMPurify.sanitize(marked.parse(text, {breaks: true}));
+          const cleanForSpeech = (text) =>
+            text
+              .replace(/```[\s\S]*?```/g, '')
+              .replace(/`+/g, '')
+              .replace(/!\[[^\]]*\]\([^)]+\)/g, '')
+              .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+              .replace(/^#{1,6}\s+/gm, '')
+              .replace(/^\s*[-*+]\s+/gm, '')
+              .replace(/^\s*\d+\.\s+/gm, '')
+              .replace(/[*_~]+/g, '')
+              .replace(/\s+/g, ' ')
+              .trim();
+
+          const speak = (text) => {
+            if (!window.speechSynthesis) return;
+            const clean = text.replace(/\s+/g, ' ').trim();
+            if (!clean) return;
+            window.speechSynthesis.cancel();
+            const u = new SpeechSynthesisUtterance(clean);
+            if (preferredVoice) u.voice = preferredVoice;
+            u.rate = 1;
+            u.pitch = 1;
+            u.volume = 1;
+            u.onend = () => (stopBtn.hidden = true);
+            u.onerror = () => (stopBtn.hidden = true);
+            stopBtn.hidden = false;
+            window.speechSynthesis.speak(u);
+          };
+
+          const apiKey = new URLSearchParams(window.location.search).get('key');
+          let audioCtx;
+          let currentGeminiSource = null;
+          const speakWithGemini = async (text) => {
+            if (!apiKey) return speak(text);
+            try {
+              const res = await fetch(
+                'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=' +
+                  encodeURIComponent(apiKey),
+                {
+                  method: 'POST',
+                  headers: {'Content-Type': 'application/json'},
+                  body: JSON.stringify({
+                    contents: [{parts: [{text}]}],
+                    generationConfig: {
+                      responseModalities: ['AUDIO'],
+                      speechConfig: {
+                        voiceConfig: {
+                          prebuiltVoiceConfig: {voiceName: 'Kore'},
+                        },
+                      },
+                    },
+                  }),
+                }
+              );
+              if (!res.ok) throw new Error('tts http ' + res.status);
+              const json = await res.json();
+              const b64 =
+                json?.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+              if (!b64) throw new Error('tts no audio in response');
+              const bin = atob(b64);
+              const bytes = new Uint8Array(bin.length);
+              for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+              const pcm = new Int16Array(
+                bytes.buffer,
+                bytes.byteOffset,
+                bytes.byteLength / 2
+              );
+              const f32 = new Float32Array(pcm.length);
+              for (let i = 0; i < pcm.length; i++) f32[i] = pcm[i] / 32768;
+              audioCtx ??= new (window.AudioContext ||
+                window.webkitAudioContext)();
+              const buf = audioCtx.createBuffer(1, f32.length, 24000);
+              buf.copyToChannel(f32, 0);
+              const src = audioCtx.createBufferSource();
+              src.buffer = buf;
+              src.connect(audioCtx.destination);
+              src.onended = () => {
+                if (currentGeminiSource === src) {
+                  currentGeminiSource = null;
+                  stopBtn.hidden = true;
+                }
+              };
+              currentGeminiSource = src;
+              stopBtn.hidden = false;
+              src.start();
+            } catch (e) {
+              console.warn('gemini tts failed, falling back to browser', e);
+              speak(text);
+            }
+          };
+
+          const ttsSelect = document.getElementById('ttsEngine');
+          const stopBtn = document.getElementById('stopTts');
+          const stopSpeaking = () => {
+            if (window.speechSynthesis) window.speechSynthesis.cancel();
+            if (currentGeminiSource) {
+              try {
+                currentGeminiSource.stop();
+              } catch (_) {}
+              currentGeminiSource = null;
+            }
+            stopBtn.hidden = true;
+          };
+          stopBtn.addEventListener('click', stopSpeaking);
+          const TTS_KEY = 'world-ask-tts-engine';
+          ttsSelect.value = localStorage.getItem(TTS_KEY) || 'browser';
+          ttsSelect.addEventListener('change', () => {
+            localStorage.setItem(TTS_KEY, ttsSelect.value);
+          });
+          const speakRouted = (text) => {
+            const engine = ttsSelect.value;
+            stopSpeaking();
+            if (engine === 'off') return;
+            if (engine === 'gemini') return speakWithGemini(text);
+            return speak(text);
+          };
+
+          const micBtn = document.getElementById('mic');
+          const chipsEl = document.getElementById('chips');
+          const setBusy = (busy) => {
+            button.disabled = busy;
+            button.textContent = busy ? 'thinking...' : 'ask';
+            micBtn.disabled =
+              busy ||
+              !(window.SpeechRecognition || window.webkitSpeechRecognition);
+            promptInput.disabled = busy;
+            chipsEl
+              .querySelectorAll('.chip')
+              .forEach((c) => (c.disabled = busy));
+          };
+
+          const run = async () => {
+            const prompt = promptInput.value.trim();
+            if (!prompt) return;
+            if (!xb.core.ai || !xb.core.ai.isAvailable()) {
+              alert('Gemini AI is not available. Set up your API key first.');
+              return;
+            }
+            setBusy(true);
+            answerEl.classList.add('placeholder');
+            answerEl.textContent = 'looking...';
+            try {
+              const briefPrompt =
+                prompt + '\n\nAnswer in 1-2 short sentences. No preamble.';
+              const text = await xb.world.askAboutScene(briefPrompt);
+              const spoken = text ? cleanForSpeech(text) : '';
+              answerEl.classList.remove('placeholder');
+              if (text) {
+                answerEl.innerHTML = renderMarkdown(text);
+              } else {
+                answerEl.textContent = '(no answer)';
+              }
+              if (spoken) speakRouted(spoken);
+            } catch (e) {
+              console.error('askAboutScene failed', e);
+              answerEl.textContent = 'error: ' + (e.message || e);
+            } finally {
+              setBusy(false);
+            }
+          };
+
+          button.addEventListener('click', run);
+          promptInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') run();
+          });
+          chipsEl.addEventListener('click', (e) => {
+            const chip = e.target.closest('.chip');
+            if (!chip || chip.disabled) return;
+            promptInput.value = chip.dataset.prompt;
+            run();
+          });
+
+          const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+          if (!SR) {
+            micBtn.disabled = true;
+            micBtn.title = 'speech recognition not supported in this browser';
+          } else {
+            const rec = new SR();
+            rec.lang = 'en-US';
+            rec.interimResults = true;
+            rec.continuous = false;
+            let listening = false;
+            micBtn.addEventListener('click', () => {
+              if (listening) {
+                rec.stop();
+                return;
+              }
+              stopSpeaking();
+              promptInput.value = '';
+              rec.start();
+            });
+            rec.onstart = () => {
+              listening = true;
+              micBtn.classList.add('listening');
+              micBtn.setAttribute('aria-label', 'Stop listening');
+            };
+            rec.onresult = (e) => {
+              const transcript = Array.from(e.results)
+                .map((r) => r[0].transcript)
+                .join('');
+              promptInput.value = transcript;
+            };
+            rec.onerror = (e) => {
+              console.warn('speech error', e.error);
+            };
+            rec.onend = () => {
+              listening = false;
+              micBtn.classList.remove('listening');
+              micBtn.setAttribute('aria-label', 'Ask by voice');
+              if (promptInput.value.trim()) run();
+            };
+          }
+        }
+      }
+
+      document.addEventListener('DOMContentLoaded', () => {
+        const options = new xb.Options();
+        options.enableAI();
+        options.ai.gemini.model = 'gemini-3.1-flash-lite';
+        options.enableCamera();
+        options.setAppTitle('Ask About Scene');
+        xb.add(new MainScript());
+        xb.init(options);
+      });
+    </script>
+  </body>
+</html>

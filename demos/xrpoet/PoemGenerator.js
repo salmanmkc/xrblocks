@@ -88,23 +88,13 @@ export class PoemGenerator extends xb.Script {
     }
 
     try {
-      const snapshot = await this.deviceCamera.getSnapshot({
-        outputFormat: 'base64',
-      });
-      if (!snapshot) {
-        throw new Error('Failed to capture video snapshot.');
-      }
-      const {strippedBase64, mimeType} = xb.parseBase64DataURL(snapshot);
-      const image = {inlineData: {mimeType: mimeType, data: strippedBase64}};
       const question =
         'Can you write a 12 lined, lighthearted poem about what you see?';
-      const parts = [image, {text: question}];
-
-      const response = await this.ai.query({
-        type: 'multiPart',
-        parts: parts,
-      });
-      this.responseDisplay.setText(`${response.text}\n\n`);
+      const text = await xb.world.askAboutScene(question);
+      if (!text) {
+        throw new Error('Empty response from AI.');
+      }
+      this.responseDisplay.setText(`${text}\n\n`);
       this.poemGenerated = true;
     } catch (error) {
       this.responseDisplay.setText(`Error: ${error.message}\n\n`);
