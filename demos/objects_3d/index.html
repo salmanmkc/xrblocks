@@ -626,6 +626,26 @@
         const group = new THREE.Group();
         const geom = new THREE.BoxGeometry(obb.size.x, obb.size.y, obb.size.z);
         const edges = new THREE.EdgesGeometry(geom);
+        // Two passes so the box reads clearly even when the object's mesh sits
+        // between the viewer and the back edges:
+        //   1. Faint pass with depthTest off, drawn first (renderOrder 0) so
+        //      occluded edges show through as a hint of where the back of the
+        //      box is.
+        //   2. Solid pass with normal depth testing, drawn after, so visible
+        //      edges in front of geometry pop crisply over the see-through.
+        const ghostLines = new THREE.LineSegments(
+          edges,
+          new THREE.LineBasicMaterial({
+            color,
+            transparent: true,
+            opacity: 0.25,
+            depthTest: false,
+            depthWrite: false,
+          })
+        );
+        ghostLines.renderOrder = 1;
+        group.add(ghostLines);
+
         const lines = new THREE.LineSegments(
           edges,
           new THREE.LineBasicMaterial({
@@ -634,17 +654,20 @@
             opacity: 0.95,
           })
         );
+        lines.renderOrder = 2;
         group.add(lines);
 
         const labelText = new Text();
         labelText.text = label;
-        labelText.fontSize = 0.04;
+        labelText.fontSize = 0.07;
         labelText.color = 0xffffff;
-        labelText.outlineWidth = 0.003;
+        labelText.outlineWidth = 0.006;
         labelText.outlineColor = 0x000000;
         labelText.anchorX = 'center';
         labelText.anchorY = 'bottom';
-        labelText.position.set(0, obb.size.y / 2 + 0.03, 0);
+        labelText.position.set(0, obb.size.y / 2 + 0.04, 0);
+        labelText.renderOrder = 3;
+        labelText.material && (labelText.material.depthTest = false);
         // Billboard: rotate every frame to face the rendering camera so the
         // text is always readable regardless of viewer position. Counter the
         // group's yaw so the text sits in world space, not box-local space.
