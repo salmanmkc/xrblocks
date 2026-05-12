@@ -204,7 +204,6 @@
     <script type="module">
       import * as THREE from 'three';
       import * as xb from 'xrblocks';
-      import {Text} from 'troika-three-text';
       import {
         FilesetResolver,
         InteractiveSegmenter,
@@ -286,7 +285,7 @@
       const FLAT_LABEL_RE =
         /\b(art|artwork|painting|picture|poster|photo|photograph|mirror|frame|window|whiteboard|screen|monitor|tv|television|display|door)\b/i;
       const LIGHT_LABEL_RE =
-        /\b(lamp|light|lightbulb|fixture|chandelier|sconce|pendant|lantern|bulb)\b/i;
+        /\b(lamp|lamps|lampshade|light|lightbulb|fixture|chandelier|sconce|pendant|lantern|bulb)\b/i;
       const SMALL_LABEL_RE =
         /\b(cup|mug|glass|bottle|book|magazine|remote|phone|pen|pencil|bowl|plate|coaster|candle|vase|pot|toy|tissue|controller|keys|wallet|clock)\b/i;
       function isFlatLabel(label) {
@@ -622,6 +621,61 @@
         light: 0xffd60a,
       };
 
+      function makeLabelSprite(text, lineColor) {
+        // Render the label text into a 2D canvas, wrap it in a sprite so it
+        // billboards automatically. World height is fixed (~0.18 m) so the
+        // text reads at a consistent visual size regardless of box size.
+        const padX = 24;
+        const padY = 14;
+        const fontPx = 64;
+        const measureCanvas = document.createElement('canvas');
+        const measureCtx = measureCanvas.getContext('2d');
+        measureCtx.font = `bold ${fontPx}px sans-serif`;
+        const textW = Math.ceil(measureCtx.measureText(text).width);
+        const w = textW + padX * 2;
+        const h = fontPx + padY * 2;
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        // Pill background colored to match the box edges.
+        const r = h / 2;
+        ctx.fillStyle = 'rgba(0,0,0,0.78)';
+        ctx.beginPath();
+        ctx.moveTo(r, 0);
+        ctx.lineTo(w - r, 0);
+        ctx.arc(w - r, r, r, -Math.PI / 2, Math.PI / 2);
+        ctx.lineTo(r, h);
+        ctx.arc(r, r, r, Math.PI / 2, -Math.PI / 2);
+        ctx.closePath();
+        ctx.fill();
+        ctx.strokeStyle = '#' + lineColor.toString(16).padStart(6, '0');
+        ctx.lineWidth = 4;
+        ctx.stroke();
+        ctx.font = `bold ${fontPx}px sans-serif`;
+        ctx.textBaseline = 'middle';
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText(text, w / 2, h / 2 + 2);
+        const tex = new THREE.CanvasTexture(canvas);
+        tex.anisotropy = 8;
+        tex.minFilter = THREE.LinearFilter;
+        tex.magFilter = THREE.LinearFilter;
+        const mat = new THREE.SpriteMaterial({
+          map: tex,
+          transparent: true,
+          depthTest: false,
+          depthWrite: false,
+        });
+        const sprite = new THREE.Sprite(mat);
+        const targetH = 0.18;
+        sprite.scale.set((targetH * w) / h, targetH, 1);
+        // The xrblocks raycaster crashes on sprites without a camera reference;
+        // these labels are display-only so disable raycasting on them.
+        sprite.raycast = () => {};
+        return sprite;
+      }
+
       function buildBoxGroup(obb, label, color = 0x4cd964) {
         const group = new THREE.Group();
         const geom = new THREE.BoxGeometry(obb.size.x, obb.size.y, obb.size.z);
@@ -657,27 +711,16 @@
         lines.renderOrder = 2;
         group.add(lines);
 
-        const labelText = new Text();
-        labelText.text = label;
-        labelText.fontSize = 0.07;
-        labelText.color = 0xffffff;
-        labelText.outlineWidth = 0.006;
-        labelText.outlineColor = 0x000000;
-        labelText.anchorX = 'center';
-        labelText.anchorY = 'bottom';
-        labelText.position.set(0, obb.size.y / 2 + 0.04, 0);
-        labelText.renderOrder = 3;
-        labelText.material && (labelText.material.depthTest = false);
-        // Billboard: rotate every frame to face the rendering camera so the
-        // text is always readable regardless of viewer position. Counter the
-        // group's yaw so the text sits in world space, not box-local space.
-        labelText.onBeforeRender = (renderer, scene, camera) => {
-          labelText.lookAt(camera.position);
-          labelText.rotation.y -= group.rotation.y;
-        };
-        labelText.sync && labelText.sync();
-        group.add(labelText);
-        group.userData.label = labelText;
+        // Build a canvas-based Sprite for the label. Sprites always face the
+        // camera (so labels stay readable from any viewing angle) and they
+        // sidestep the troika-three-text setup-timing issues that left the
+        // previous Text-based labels invisible. Render order is high so the
+        // label always reads on top of the box edges and the world geometry.
+        const labelSprite = makeLabelSprite(label, color);
+        labelSprite.position.set(0, obb.size.y / 2 + 0.06, 0);
+        labelSprite.renderOrder = 3;
+        group.add(labelSprite);
+        group.userData.label = labelSprite;
 
         group.position.copy(obb.center);
         group.rotation.y = obb.angle;
