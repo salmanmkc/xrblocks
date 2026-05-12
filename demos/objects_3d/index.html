@@ -612,6 +612,16 @@
       }
 
 
+      // Per-category line colors so categories are visually distinguishable
+      // at a glance: flat (paintings/TV) = orange, furniture = green,
+      // small (cup/remote) = cyan, light = yellow.
+      const CAT_COLOR = {
+        flat: 0xff9f0a,
+        furniture: 0x4cd964,
+        small: 0x64d2ff,
+        light: 0xffd60a,
+      };
+
       function buildBoxGroup(obb, label, color = 0x4cd964) {
         const group = new THREE.Group();
         const geom = new THREE.BoxGeometry(obb.size.x, obb.size.y, obb.size.z);
@@ -758,15 +768,22 @@
           } else {
             points = rejectByAnchor(raw, obj.position, 0.7);
           }
-          const obb = fitYawOBB(points, {category: cat});
+          const obb = fitYawOBB(points, {
+            category: cat,
+            camera: xb.core.camera,
+            anchor: obj.position,
+          });
           if (!obb) continue;
           // Reject implausible detections: too far from origin (likely
           // depth was sampled on a far background through a window/sky),
-          // too few inlier points to trust, or absurd dimensions.
+          // too few inlier points to trust, or absurd dimensions. The
+          // point-count threshold is category-aware — small objects like
+          // a cup or remote naturally only get a handful of depth samples.
           const c = obb.center;
           const farFromRoom =
             Math.abs(c.x) > 6 || Math.abs(c.z) > 6 || c.y < -1 || c.y > 5;
-          const tooFewPoints = points.length < 20;
+          const minPoints = cat === 'small' ? 4 : cat === 'light' ? 8 : 20;
+          const tooFewPoints = points.length < minPoints;
           const oversize =
             obb.size.x > 4 || obb.size.y > 3 || obb.size.z > 4;
           if (farFromRoom || tooFewPoints || oversize) {
@@ -788,7 +805,7 @@
             );
             continue;
           }
-          boxes.add(buildBoxGroup(obb, obj.label || 'object'));
+          boxes.add(buildBoxGroup(obb, obj.label || 'object', CAT_COLOR[cat] || 0x4cd964));
           kept++;
         }
         setStatus(`fit ${kept} / ${detected.length} oriented boxes`);
