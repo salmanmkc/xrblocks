@@ -1,0 +1,640 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <title>3D Object Boxes</title>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, user-scalable=no"
+    />
+    <meta
+      http-equiv="Cache-Control"
+      content="no-cache, no-store, must-revalidate"
+    />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
+    <link type="text/css" rel="stylesheet" href="../../samples/main.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.182.0/build/three.module.js",
+          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.182.0/examples/jsm/",
+          "troika-three-text": "https://cdn.jsdelivr.net/gh/protectwise/troika@028b81cf308f0f22e5aa8e78196be56ec1997af5/packages/troika-three-text/src/index.js",
+          "troika-three-utils": "https://cdn.jsdelivr.net/gh/protectwise/troika@v0.52.4/packages/troika-three-utils/src/index.js",
+          "troika-worker-utils": "https://cdn.jsdelivr.net/gh/protectwise/troika@v0.52.4/packages/troika-worker-utils/src/index.js",
+          "bidi-js": "https://esm.sh/bidi-js@%5E1.0.2?target=es2022",
+          "webgl-sdf-generator": "https://esm.sh/webgl-sdf-generator@1.1.1/es2022/webgl-sdf-generator.mjs",
+          "lit": "https://cdn.jsdelivr.net/gh/lit/dist@3/core/lit-core.min.js",
+          "lit/": "https://esm.run/lit@3/",
+          "xrblocks": "../../build/xrblocks.js",
+          "xrblocks/addons/": "../../build/addons/",
+          "@mediapipe/tasks-vision": "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.34/vision_bundle.mjs",
+          "@google/genai": "https://cdn.jsdelivr.net/npm/@google/genai/+esm"
+        }
+      }
+    </script>
+    <style>
+      .panel {
+        position: fixed;
+        bottom: 24px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 10;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        background: rgba(20, 20, 20, 0.85);
+        padding: 14px 18px;
+        border-radius: 12px;
+        font-family: system-ui, sans-serif;
+        color: #eee;
+        max-width: 540px;
+        width: 92%;
+      }
+      .panel button {
+        padding: 9px 14px;
+        border-radius: 8px;
+        border: 1px solid #444;
+        background: #2a2a2a;
+        color: white;
+        cursor: pointer;
+        font-size: 14px;
+      }
+      .panel button:hover:not(:disabled) {
+        background: #3a3a3a;
+      }
+      .panel button:disabled {
+        opacity: 0.4;
+        cursor: default;
+      }
+      .panel .row {
+        display: flex;
+        gap: 8px;
+      }
+      .panel .status {
+        font-size: 12px;
+        color: #aaa;
+      }
+      .key-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.85);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 999;
+        font-family: system-ui, sans-serif;
+      }
+      .key-card {
+        background: #1a1a1a;
+        color: #eee;
+        padding: 24px;
+        border-radius: 12px;
+        max-width: 420px;
+        width: 92%;
+      }
+      .key-card h2 {margin: 0 0 8px 0;}
+      .key-card p {font-size: 13px; color: #bbb; line-height: 1.5;}
+      .key-card a {color: #4cd964;}
+      .key-card input {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 10px;
+        font-size: 14px;
+        background: #2a2a2a;
+        border: 1px solid #444;
+        color: white;
+        border-radius: 8px;
+        margin: 10px 0;
+      }
+      .key-card button {
+        padding: 10px 16px;
+        background: #4cd964;
+        border: none;
+        border-radius: 8px;
+        color: #000;
+        font-weight: 600;
+        cursor: pointer;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="keyOverlay" class="key-overlay" style="display: none">
+      <div class="key-card">
+        <h2>Gemini API key</h2>
+        <p>
+          This demo uses Gemini for open-vocabulary object detection (so it
+          can find lamps, plants, anything you ask for — not just the 80 COCO
+          classes). Get a free key from
+          <a
+            href="https://aistudio.google.com/app/apikey"
+            target="_blank"
+            rel="noopener"
+            >aistudio.google.com</a
+          >. The key is saved to localStorage and only sent to Google.
+        </p>
+        <input id="keyInput" type="password" placeholder="AIza..." />
+        <button id="keySave">save and reload</button>
+      </div>
+    </div>
+
+    <script>
+      // Resolve gemini key: ?key= URL param > localStorage > ./keys.json > overlay.
+      (async function () {
+        const STORAGE_KEY = 'gemini-api-key';
+        const params = new URLSearchParams(window.location.search);
+        if (params.has('key')) {
+          window.localStorage.setItem(STORAGE_KEY, params.get('key'));
+          return;
+        }
+        const stored = window.localStorage.getItem(STORAGE_KEY);
+        if (stored) {
+          params.set('key', stored);
+          const newUrl =
+            window.location.pathname +
+            '?' +
+            params.toString() +
+            window.location.hash;
+          window.history.replaceState(null, '', newUrl);
+          return;
+        }
+        try {
+          const res = await fetch('./keys.json', {cache: 'no-store'});
+          if (res.ok) {
+            const k = (await res.json()).key;
+            if (k) {
+              window.localStorage.setItem(STORAGE_KEY, k);
+              params.set('key', k);
+              window.location.search = '?' + params.toString();
+              return;
+            }
+          }
+        } catch (_) {
+          // no keys.json, fall through to overlay
+        }
+        const overlay = document.getElementById('keyOverlay');
+        const input = document.getElementById('keyInput');
+        const save = document.getElementById('keySave');
+        overlay.style.display = 'flex';
+        const submit = () => {
+          const k = input.value.trim();
+          if (!k) return;
+          window.localStorage.setItem(STORAGE_KEY, k);
+          params.set('key', k);
+          window.location.search = '?' + params.toString();
+        };
+        save.addEventListener('click', submit);
+        input.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') submit();
+        });
+        input.focus();
+      })();
+    </script>
+
+    <div class="panel">
+      <div class="row">
+        <button id="detect">Detect 3D objects</button>
+        <button id="clear">Clear</button>
+      </div>
+      <div class="status" id="status">
+        Press detect to fit oriented 3D boxes around things in front of you.
+      </div>
+    </div>
+
+    <script type="module">
+      import * as THREE from 'three';
+      import * as xb from 'xrblocks';
+      import {Text} from 'troika-three-text';
+      import {
+        FilesetResolver,
+        InteractiveSegmenter,
+      } from '@mediapipe/tasks-vision';
+
+      const boxes = new THREE.Group();
+      let xrStatusText = null;
+
+      // Lazy-loaded InteractiveSegmenter. Given a click point inside an image,
+      // returns a per-pixel mask of the object the user "tapped". We use the
+      // bbox centre as the click point for each detected object.
+      let _segmenter = null;
+      let _segmenterPromise = null;
+      function getSegmenter() {
+        if (_segmenter) return Promise.resolve(_segmenter);
+        if (_segmenterPromise) return _segmenterPromise;
+        _segmenterPromise = (async () => {
+          const vision = await FilesetResolver.forVisionTasks(
+            'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.34/wasm'
+          );
+          _segmenter = await InteractiveSegmenter.createFromOptions(vision, {
+            baseOptions: {
+              modelAssetPath:
+                'https://storage.googleapis.com/mediapipe-tasks/interactive_segmenter/ptm_512_hdt_ptm_woid.tflite',
+              delegate: 'GPU',
+            },
+            outputCategoryMask: true,
+            outputConfidenceMasks: false,
+          });
+          return _segmenter;
+        })();
+        return _segmenterPromise;
+      }
+
+      // Raycast each foreground mask pixel against the world-positioned depth
+      // mesh. Mask is iterated only inside the bbox region with a stride to
+      // keep raycast count reasonable. Foreground convention: Magic Touch
+      // returns 0 for the selected object, non-zero for background, so we
+      // accept pixels with value < 128.
+      const _raycaster = new THREE.Raycaster();
+      const _ndc = new THREE.Vector2();
+      function sampleDepthInMask(mask, box2d, stride = 6) {
+        const points = [];
+        const camera = xb.core.camera;
+        const mesh = xb.core.depth?.depthMesh;
+        if (!camera || !mesh) return points;
+        const mw = mask.width;
+        const mh = mask.height;
+        const arr = mask.getAsUint8Array();
+        const xMin = Math.max(0, Math.floor(box2d.min.x * mw));
+        const xMax = Math.min(mw, Math.ceil(box2d.max.x * mw));
+        const yMin = Math.max(0, Math.floor(box2d.min.y * mh));
+        const yMax = Math.min(mh, Math.ceil(box2d.max.y * mh));
+        let fg = 0;
+        for (let py = yMin; py < yMax; py += stride) {
+          for (let px = xMin; px < xMax; px += stride) {
+            if (arr[py * mw + px] >= 128) continue;
+            fg++;
+            const u = (px + 0.5) / mw;
+            const v = (py + 0.5) / mh;
+            // Image UVs are top-down; NDC y is up.
+            _ndc.set(u * 2 - 1, (1 - v) * 2 - 1);
+            _raycaster.setFromCamera(_ndc, camera);
+            const hits = _raycaster.intersectObject(mesh, false);
+            if (hits.length > 0) {
+              points.push(hits[0].point.clone());
+            }
+          }
+        }
+        return {points, foregroundPixels: fg};
+      }
+
+      // Drop points more than `radius` metres away from `anchor`. Anchor is
+      // the SDK-computed centre point of the detection (already a depth-mesh
+      // raycast hit), so this filter peels off background / foreground noise
+      // bleeding into the 2D box.
+      function rejectOutliers(points, anchor, radius = 1.0) {
+        return points.filter((p) => p.distanceTo(anchor) < radius);
+      }
+
+      // Yaw-constrained oriented bounding box. We assume gravity-aligned objects
+      // (Y is up), do PCA in the horizontal plane to get yaw, take min/max
+      // extents in that rotated frame for footprint, and use min/max world Y
+      // for height. This is way more stable than full 3D PCA on noisy depth.
+      const FLAT_LABEL_RE =
+        /\b(art|artwork|painting|picture|poster|photo|photograph|mirror|frame|window|whiteboard|screen|monitor|tv|television|display|door)\b/i;
+      function isFlatLabel(label) {
+        return !!label && FLAT_LABEL_RE.test(label);
+      }
+
+      function fitYawOBB(points, opts = {}) {
+        if (points.length < 6) return null;
+
+        // Flat-object path: orient the slab to lie ON the wall by fitting a
+        // line through the mask points in the XZ plane (2D PCA). The line
+        // direction is the wall's horizontal axis; its perpendicular is the
+        // wall normal. We force the slab's thin local-Z axis to be that
+        // normal (pointing toward the camera so the front face is visible).
+        if (opts.flat) {
+          // Trim depth outliers: corner-mounted flats often pick up mask
+          // pixels on the adjacent wall, which corrupts plane fitting.
+          // Keep only points within ±8cm of the median camera-distance.
+          let pts = points;
+          if (opts.camera) {
+            const cam = opts.camera;
+            const ds = points.map(p => {
+              const dx = p.x - cam.x, dy = p.y - cam.y, dz = p.z - cam.z;
+              return Math.sqrt(dx * dx + dy * dy + dz * dz);
+            });
+            const sorted = ds.slice().sort((a, b) => a - b);
+            const med = sorted[Math.floor(sorted.length / 2)];
+            pts = points.filter((_, i) => Math.abs(ds[i] - med) < 0.08);
+            if (pts.length < 6) pts = points;
+          }
+          // 2D PCA in XZ.
+          let cx = 0, cz = 0;
+          for (const p of pts) { cx += p.x; cz += p.z; }
+          cx /= pts.length; cz /= pts.length;
+          let Sxx = 0, Sxz = 0, Szz = 0;
+          for (const p of pts) {
+            const dx = p.x - cx, dz = p.z - cz;
+            Sxx += dx * dx; Sxz += dx * dz; Szz += dz * dz;
+          }
+          // wallAngle = orientation of the dominant in-plane direction.
+          const wallAngle = 0.5 * Math.atan2(2 * Sxz, Sxx - Szz);
+          // Box yaw: local X = wall direction = (cos a, 0, -sin a). With
+          // a = wallAngle we get local X aligned to the dominant axis, and
+          // local Z = (sin a, 0, cos a) is the wall normal.
+          let angle = wallAngle;
+          // Flip so local Z points toward the camera (front face visible).
+          if (opts.camera) {
+            const nx = Math.sin(angle), nz = Math.cos(angle);
+            const dxc = opts.camera.x - cx, dzc = opts.camera.z - cz;
+            if (nx * dxc + nz * dzc < 0) angle += Math.PI;
+          }
+          const cs = Math.cos(angle), sn = Math.sin(angle);
+          // Project points onto local X (in-wall horizontal) and collect Y.
+          const us = [], ys = [];
+          for (const p of pts) {
+            const dx = p.x - cx, dz = p.z - cz;
+            us.push(dx * cs - dz * sn);
+            ys.push(p.y);
+          }
+          us.sort((a, b) => a - b);
+          ys.sort((a, b) => a - b);
+          const pct = (arr, q) => arr[Math.min(arr.length - 1,
+            Math.max(0, Math.floor(q * (arr.length - 1))))];
+          const umin = pct(us, 0.05);
+          const umax = pct(us, 0.95);
+          const ymin = pct(ys, 0.05);
+          const ymax = pct(ys, 0.95);
+          const uc = (umin + umax) / 2;
+          const yc = (ymin + ymax) / 2;
+          const sizeU = Math.max(0.05, umax - umin);
+          const sizeY = Math.max(0.05, ymax - ymin);
+          const sizeV = 0.05;
+          // Center: shift along local X by uc, keep on wall line in XZ.
+          return {
+            center: new THREE.Vector3(cx + uc * cs, yc, cz - uc * sn),
+            size: new THREE.Vector3(sizeU, sizeY, sizeV),
+            angle,
+          };
+        }
+
+        let cx = 0,
+          cy = 0,
+          cz = 0;
+        for (const p of points) {
+          cx += p.x;
+          cy += p.y;
+          cz += p.z;
+        }
+        cx /= points.length;
+        cy /= points.length;
+        cz /= points.length;
+
+        let Sxx = 0,
+          Sxz = 0,
+          Szz = 0;
+        for (const p of points) {
+          const dx = p.x - cx;
+          const dz = p.z - cz;
+          Sxx += dx * dx;
+          Sxz += dx * dz;
+          Szz += dz * dz;
+        }
+        const angle = 0.5 * Math.atan2(2 * Sxz, Sxx - Szz);
+        const cs = Math.cos(angle);
+        const sn = Math.sin(angle);
+        let umin = Infinity,
+          umax = -Infinity,
+          vmin = Infinity,
+          vmax = -Infinity,
+          ymin = Infinity,
+          ymax = -Infinity;
+        for (const p of points) {
+          const dx = p.x - cx;
+          const dz = p.z - cz;
+          const u = dx * cs + dz * sn;
+          const v = -dx * sn + dz * cs;
+          if (u < umin) umin = u;
+          if (u > umax) umax = u;
+          if (v < vmin) vmin = v;
+          if (v > vmax) vmax = v;
+          if (p.y < ymin) ymin = p.y;
+          if (p.y > ymax) ymax = p.y;
+        }
+        const uc = (umin + umax) / 2;
+        const vc = (vmin + vmax) / 2;
+        const yc = (ymin + ymax) / 2;
+        const offX = uc * cs - vc * sn;
+        const offZ = uc * sn + vc * cs;
+        return {
+          center: new THREE.Vector3(cx + offX, yc, cz + offZ),
+          size: new THREE.Vector3(
+            Math.max(0.02, umax - umin),
+            Math.max(0.02, ymax - ymin),
+            Math.max(0.02, vmax - vmin)
+          ),
+          angle,
+        };
+      }
+
+      function buildBoxGroup(obb, label, color = 0x4cd964) {
+        const group = new THREE.Group();
+        const geom = new THREE.BoxGeometry(obb.size.x, obb.size.y, obb.size.z);
+        const edges = new THREE.EdgesGeometry(geom);
+        const lines = new THREE.LineSegments(
+          edges,
+          new THREE.LineBasicMaterial({color, transparent: true, opacity: 0.95})
+        );
+        group.add(lines);
+
+        const labelText = new Text();
+        labelText.text = label;
+        labelText.fontSize = 0.04;
+        labelText.color = 0xffffff;
+        labelText.outlineWidth = 0.003;
+        labelText.outlineColor = 0x000000;
+        labelText.anchorX = 'center';
+        labelText.anchorY = 'bottom';
+        labelText.position.set(0, obb.size.y / 2 + 0.03, 0);
+        labelText.sync && labelText.sync();
+        group.add(labelText);
+        group.userData.label = labelText;
+
+        group.position.copy(obb.center);
+        group.rotation.y = obb.angle;
+        return group;
+      }
+
+      function setStatus(s) {
+        const el = document.getElementById('status');
+        if (el) el.textContent = s;
+        if (xrStatusText) {
+          xrStatusText.text = s;
+          xrStatusText.sync && xrStatusText.sync();
+        }
+      }
+
+      function clearBoxes() {
+        while (boxes.children.length) {
+          const g = boxes.children[0];
+          boxes.remove(g);
+          g.traverse((o) => {
+            if (o.geometry) o.geometry.dispose();
+            if (o.material) {
+              if (Array.isArray(o.material)) {
+                o.material.forEach((m) => m.dispose && m.dispose());
+              } else if (o.material.dispose) {
+                o.material.dispose();
+              }
+            }
+            if (o.dispose && o !== g) o.dispose();
+          });
+        }
+      }
+
+      async function detect() {
+        if (!xb.core.world?.objects) {
+          setStatus('object detection not available');
+          return;
+        }
+        setStatus('detecting…');
+        let detected = [];
+        try {
+          detected = await xb.core.world.objects.runDetection();
+        } catch (e) {
+          console.warn('[objects_3d] detection threw', e);
+          setStatus('detection failed (see console)');
+          return;
+        }
+        console.log(
+          '[objects_3d] runDetection returned',
+          detected.length,
+          'objects',
+          detected.map((o) => ({
+            label: o.label,
+            box: o.detection2DBoundingBox && {
+              min: o.detection2DBoundingBox.min.toArray(),
+              max: o.detection2DBoundingBox.max.toArray(),
+            },
+            pos: o.position && o.position.toArray(),
+          }))
+        );
+        if (!detected.length) {
+          setStatus('nothing detected');
+          return;
+        }
+        clearBoxes();
+        let segmenter;
+        try {
+          segmenter = await getSegmenter();
+        } catch (e) {
+          console.warn('[objects_3d] segmenter init failed', e);
+          setStatus('segmenter failed to load (see console)');
+          return;
+        }
+        const snapshot = await xb.core.deviceCamera.getSnapshot({
+          outputFormat: 'imageData',
+        });
+        if (!snapshot) {
+          setStatus('no camera frame');
+          return;
+        }
+        let kept = 0;
+        for (const obj of detected) {
+          const box2d = obj.detection2DBoundingBox;
+          const cx = (box2d.min.x + box2d.max.x) * 0.5;
+          const cy = (box2d.min.y + box2d.max.y) * 0.5;
+          let segResult;
+          try {
+            segResult = segmenter.segment(snapshot, {
+              keypoint: {x: cx, y: cy},
+            });
+          } catch (e) {
+            console.warn('[objects_3d] segment threw for', obj.label, e);
+            continue;
+          }
+          const mask = segResult.categoryMask;
+          if (!mask) {
+            console.warn('[objects_3d] no mask for', obj.label);
+            continue;
+          }
+          const {points: raw, foregroundPixels} = sampleDepthInMask(
+            mask,
+            box2d
+          );
+          mask.close();
+          const points = rejectOutliers(raw, obj.position);
+          const obb = fitYawOBB(points, {
+            flat: isFlatLabel(obj.label),
+            anchor: obj.position,
+            camera: xb.core.camera.position,
+          });
+          console.log(
+            '[objects_3d] obj',
+            obj.label,
+            'fg',
+            foregroundPixels,
+            'raw',
+            raw.length,
+            'kept',
+            points.length,
+            'obb',
+            obb
+          );
+          if (!obb) continue;
+          boxes.add(buildBoxGroup(obb, obj.label || 'object'));
+          kept++;
+        }
+        setStatus(`fit ${kept} / ${detected.length} oriented boxes`);
+      }
+
+      const options = new xb.Options();
+      options.enableUI();
+      options.enableAI();
+      options.enableCamera();
+      options.enableDepth();
+      options.depth.depthMesh.updateFullResolutionGeometry = true;
+      options.depth.depthTexture.enabled = false;
+      options.depth.matchDepthView = false;
+      options.enableObjectDetection();
+      options.world.objects.backendConfig.activeBackend = 'gemini';
+      options.world.objects.showDebugVisualizations = false;
+      options.reticles.enabled = true;
+      options.setAppTitle('3D Object Boxes');
+
+      xb.init(options);
+      xb.core.scene.add(boxes);
+
+      const xrPanel = new xb.SpatialPanel({
+        width: 0.3,
+        height: 0.1,
+        backgroundColor: '#000000d9',
+        showEdge: false,
+      });
+      xrPanel.position.set(0, 1.3, -0.7);
+      xb.core.user.add(xrPanel);
+
+      const xrGrid = xrPanel.addGrid();
+      const statusRow = xrGrid.addRow({weight: 0.4});
+      const ctrlRow = xrGrid.addRow({weight: 0.6});
+      xrStatusText = statusRow.addText({
+        text: 'idle',
+        fontColor: '#cfcfcf',
+        fontSize: 0.022,
+      });
+      const detectBtnXR = ctrlRow.addCol({weight: 1}).addIconButton({
+        text: 'search',
+        fontSize: 0.5,
+        fontColor: '#ffffff',
+      });
+      detectBtnXR.onTriggered = detect;
+      const clearBtnXR = ctrlRow.addCol({weight: 1}).addIconButton({
+        text: 'delete_sweep',
+        fontSize: 0.5,
+        fontColor: '#ffffff',
+      });
+      clearBtnXR.onTriggered = () => {
+        clearBoxes();
+        setStatus('cleared');
+      };
+      xrPanel.updateLayouts();
+
+      document.getElementById('detect').addEventListener('click', detect);
+      document.getElementById('clear').addEventListener('click', () => {
+        clearBoxes();
+        setStatus('cleared');
+      });
+    </script>
+  </body>
+</html>
