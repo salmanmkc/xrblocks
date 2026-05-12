@@ -669,7 +669,26 @@
         });
         const sprite = new THREE.Sprite(mat);
         const targetH = 0.18;
-        sprite.scale.set((targetH * w) / h, targetH, 1);
+        const baseW = (targetH * w) / h;
+        sprite.scale.set(baseW, targetH, 1);
+        // Keep the label at roughly constant on-screen size by scaling with
+        // distance to the camera. Without this, the label balloons when the
+        // viewer walks up to an object and shrinks to nothing across the room.
+        // Clamped so labels never disappear and never dominate the frame.
+        const REF_DIST = 2.0;
+        const MIN_MUL = 0.55;
+        const MAX_MUL = 2.0;
+        const _camPos = new THREE.Vector3();
+        const _sprPos = new THREE.Vector3();
+        sprite.onBeforeRender = (renderer, scene, camera) => {
+          camera.getWorldPosition(_camPos);
+          sprite.getWorldPosition(_sprPos);
+          const d = _camPos.distanceTo(_sprPos);
+          let mul = d / REF_DIST;
+          if (mul < MIN_MUL) mul = MIN_MUL;
+          else if (mul > MAX_MUL) mul = MAX_MUL;
+          sprite.scale.set(baseW * mul, targetH * mul, 1);
+        };
         // The xrblocks raycaster crashes on sprites without a camera reference;
         // these labels are display-only so disable raycasting on them.
         sprite.raycast = () => {};
