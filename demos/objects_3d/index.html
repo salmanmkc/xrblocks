@@ -212,6 +212,10 @@
 
       const boxes = new THREE.Group();
       let xrStatusText = null;
+      // Expose state for Playwright-driven iteration. Local-only debug hook.
+      window.__demo = {boxes};
+      // Also expose the xrblocks namespace once init runs (populated below).
+      window.__xb = null;
 
       // Lazy-loaded InteractiveSegmenter. Given a click point inside an image,
       // returns a per-pixel mask of the object the user "tapped". We use the
@@ -428,63 +432,60 @@
       // tight extents that are immune to mask spillover.
       function fitFlatOBB(points, opts) {
         if (points.length < 6) return null;
-        const plane = ransacPlane(points, 100, 0.02);
+        // Use only points near the SDK anchor — the mask often spills onto
+        // adjacent geometry (TV stand, wall, etc) and pollutes RANSAC.
+        let workingPoints = points;
+        if (opts.anchor) {
+          const filtered = rejectByAnchor(points, opts.anchor, 0.6);
+          if (filtered.length >= 6) workingPoints = filtered;
+        }
+        const plane = ransacPlane(workingPoints, 200, 0.02);
         if (!plane) return null;
         // Force normal to be horizontal (gravity-aligned wall) and pointing
         // toward the camera so the front face is visible.
-        const n = new THREE.Vector3(plane.normal.x, 0, plane.normal.z);
+        let n = new THREE.Vector3(plane.normal.x, 0, plane.normal.z);
         if (n.lengthSq() < 1e-6) return null;
         n.normalize();
+        // Snap to nearest cardinal wall direction (±X or ±Z). Real walls in a
+        // rectangular room are axis-aligned; this prevents RANSAC from picking
+        // a near-degenerate diagonal normal when the painting is small.
+        if (Math.abs(n.x) > Math.abs(n.z)) {
+          n.set(Math.sign(n.x), 0, 0);
+        } else {
+          n.set(0, 0, Math.sign(n.z));
+        }
         if (opts.camera) {
           _diff.subVectors(opts.camera.position, plane.point);
           if (n.dot(_diff) < 0) n.multiplyScalar(-1);
         }
         const angle = Math.atan2(n.x, n.z);
-        // Reproject bbox onto plane. Fall back to inlier extents if it fails.
-        let center, sizeU, sizeY;
-        const corners = opts.box2d && opts.camera
-          ? projectBboxToPlane(opts.box2d, opts.camera, plane.point, n)
-          : null;
-        if (corners) {
-          const cs = Math.cos(angle), sn = Math.sin(angle);
-          // local X axis (in-wall horizontal): (cos a, 0, -sin a)
-          const all = [corners.TL, corners.TR, corners.BR, corners.BL];
-          let umin = Infinity, umax = -Infinity;
-          let ymin = Infinity, ymax = -Infinity;
-          let cx = 0, cz = 0;
-          for (const c of all) {
-            const u = (c.x - plane.point.x) * cs - (c.z - plane.point.z) * sn;
-            if (u < umin) umin = u;
-            if (u > umax) umax = u;
-            if (c.y < ymin) ymin = c.y;
-            if (c.y > ymax) ymax = c.y;
-            cx += c.x; cz += c.z;
-          }
-          cx /= 4; cz /= 4;
-          sizeU = Math.max(0.05, umax - umin);
-          sizeY = Math.max(0.05, ymax - ymin);
-          center = new THREE.Vector3(cx, (ymin + ymax) / 2, cz);
-        } else {
-          // Fallback: inlier-based extents along plane axes.
-          const cs = Math.cos(angle), sn = Math.sin(angle);
-          let umin = Infinity, umax = -Infinity;
-          let ymin = Infinity, ymax = -Infinity;
-          for (const p of plane.inliers) {
-            const u = (p.x - plane.point.x) * cs - (p.z - plane.point.z) * sn;
-            if (u < umin) umin = u;
-            if (u > umax) umax = u;
-            if (p.y < ymin) ymin = p.y;
-            if (p.y > ymax) ymax = p.y;
-          }
-          const uc = (umin + umax) / 2;
-          sizeU = Math.max(0.05, umax - umin);
-          sizeY = Math.max(0.05, ymax - ymin);
-          center = new THREE.Vector3(
-            plane.point.x + uc * cs,
-            (ymin + ymax) / 2,
-            plane.point.z - uc * sn
-          );
+        // Re-fit plane offset to the snapped normal using the median of inlier
+        // projections so the plane sits exactly on the wall surface.
+        const inliers = plane.inliers.length ? plane.inliers : workingPoints;
+        const offsets = inliers.map((p) => p.x * n.x + p.z * n.z);
+        offsets.sort((a, b) => a - b);
+        const offset = offsets[Math.floor(offsets.length / 2)];
+        const planePoint = new THREE.Vector3(n.x * offset, 0, n.z * offset);
+        // Use mask inlier extents — these hug the actual painting/TV pixels,
+        // unlike the 2D bbox which often includes neighboring geometry.
+        const cs = Math.cos(angle), sn = Math.sin(angle);
+        let umin = Infinity, umax = -Infinity;
+        let ymin = Infinity, ymax = -Infinity;
+        for (const p of inliers) {
+          const u = (p.x - planePoint.x) * cs - (p.z - planePoint.z) * sn;
+          if (u < umin) umin = u;
+          if (u > umax) umax = u;
+          if (p.y < ymin) ymin = p.y;
+          if (p.y > ymax) ymax = p.y;
         }
+        const uc = (umin + umax) / 2;
+        const sizeU = Math.max(0.05, umax - umin);
+        const sizeY = Math.max(0.05, ymax - ymin);
+        const center = new THREE.Vector3(
+          planePoint.x + uc * cs,
+          (ymin + ymax) / 2,
+          planePoint.z - uc * sn
+        );
         return {center, size: new THREE.Vector3(sizeU, sizeY, 0.05), angle};
       }
 
@@ -547,12 +548,15 @@
         return fitFurnitureOBB(tight);
       }
 
-      // Furniture: yaw-constrained PCA in XZ + min/max extents.
+      // Furniture: yaw-constrained PCA in XZ + percentile-clipped extents.
       function fitFurnitureOBB(points) {
         if (points.length < 6) return null;
-        let cx = 0, cy = 0, cz = 0;
-        for (const p of points) { cx += p.x; cy += p.y; cz += p.z; }
-        cx /= points.length; cy /= points.length; cz /= points.length;
+        // Robust centroid: median per-axis to ignore mask spillover outliers.
+        const xs = points.map((p) => p.x).sort((a, b) => a - b);
+        const ys = points.map((p) => p.y).sort((a, b) => a - b);
+        const zs = points.map((p) => p.z).sort((a, b) => a - b);
+        const med = (arr) => arr[Math.floor(arr.length / 2)];
+        let cx = med(xs), cy = med(ys), cz = med(zs);
         let Sxx = 0, Sxz = 0, Szz = 0;
         for (const p of points) {
           const dx = p.x - cx, dz = p.z - cz;
@@ -560,20 +564,26 @@
         }
         const angle = 0.5 * Math.atan2(2 * Sxz, Sxx - Szz);
         const cs = Math.cos(angle), sn = Math.sin(angle);
-        let umin = Infinity, umax = -Infinity,
-          vmin = Infinity, vmax = -Infinity,
-          ymin = Infinity, ymax = -Infinity;
+        // Project all points to local axes.
+        const us = [], vs = [], ysProj = [];
         for (const p of points) {
           const dx = p.x - cx, dz = p.z - cz;
-          const u = dx * cs + dz * sn;
-          const v = -dx * sn + dz * cs;
-          if (u < umin) umin = u;
-          if (u > umax) umax = u;
-          if (v < vmin) vmin = v;
-          if (v > vmax) vmax = v;
-          if (p.y < ymin) ymin = p.y;
-          if (p.y > ymax) ymax = p.y;
+          us.push(dx * cs + dz * sn);
+          vs.push(-dx * sn + dz * cs);
+          ysProj.push(p.y);
         }
+        // Percentile clipping to drop ~5% extreme outliers per axis.
+        const pctile = (arr, p) => {
+          const sorted = arr.slice().sort((a, b) => a - b);
+          return sorted[Math.max(0, Math.min(sorted.length - 1,
+            Math.floor(p * sorted.length)))];
+        };
+        const umin = pctile(us, 0.05);
+        const umax = pctile(us, 0.95);
+        const vmin = pctile(vs, 0.05);
+        const vmax = pctile(vs, 0.95);
+        const ymin = pctile(ysProj, 0.02);
+        const ymax = pctile(ysProj, 0.98);
         const uc = (umin + umax) / 2;
         const vc = (vmin + vmax) / 2;
         const offX = uc * cs - vc * sn;
@@ -596,7 +606,11 @@
         const edges = new THREE.EdgesGeometry(geom);
         const lines = new THREE.LineSegments(
           edges,
-          new THREE.LineBasicMaterial({color, transparent: true, opacity: 0.95})
+          new THREE.LineBasicMaterial({
+            color,
+            transparent: true,
+            opacity: 0.95,
+          })
         );
         group.add(lines);
 
@@ -730,7 +744,7 @@
             // (which sits on the lampshade), then tight Y cluster.
             points = rejectByY(rejectByAnchor(raw, obj.position, 0.5), 0.15);
           } else {
-            points = rejectByAnchor(raw, obj.position, 1.0);
+            points = rejectByAnchor(raw, obj.position, 0.7);
           }
           const obb = fitYawOBB(points, {
             category: cat,
@@ -754,6 +768,13 @@
           );
           if (!obb) continue;
           boxes.add(buildBoxGroup(obb, obj.label || 'object'));
+          console.log(
+            '[objects_3d] FIT', obj.label, 'cat', cat,
+            'center', obb.center.toArray().map((v) => +v.toFixed(2)),
+            'size', obb.size.toArray().map((v) => +v.toFixed(2)),
+            'angleDeg', +(obb.angle * 180 / Math.PI).toFixed(1),
+            'sdkAnchor', obj.position.toArray().map((v) => +v.toFixed(2))
+          );
           kept++;
         }
         setStatus(`fit ${kept} / ${detected.length} oriented boxes`);
@@ -775,6 +796,7 @@
 
       xb.init(options);
       xb.core.scene.add(boxes);
+      window.__xb = xb;
 
       const xrPanel = new xb.SpatialPanel({
         width: 0.3,
