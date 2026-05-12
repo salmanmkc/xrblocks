@@ -645,6 +645,13 @@
         labelText.anchorX = 'center';
         labelText.anchorY = 'bottom';
         labelText.position.set(0, obb.size.y / 2 + 0.03, 0);
+        // Billboard: rotate every frame to face the rendering camera so the
+        // text is always readable regardless of viewer position. Counter the
+        // group's yaw so the text sits in world space, not box-local space.
+        labelText.onBeforeRender = (renderer, scene, camera) => {
+          labelText.lookAt(camera.position);
+          labelText.rotation.y -= group.rotation.y;
+        };
         labelText.sync && labelText.sync();
         group.add(labelText);
         group.userData.label = labelText;
@@ -730,44 +737,45 @@
         }
         let kept = 0;
         for (const obj of detected) {
-          const box2d = obj.detection2DBoundingBox;
-          const cx = (box2d.min.x + box2d.max.x) * 0.5;
-          const cy = (box2d.min.y + box2d.max.y) * 0.5;
-          let segResult;
           try {
-            segResult = segmenter.segment(snapshot, {
-              keypoint: {x: cx, y: cy},
-            });
-          } catch (e) {
-            console.warn('[objects_3d] segment threw for', obj.label, e);
-            continue;
-          }
-          const mask = segResult.categoryMask;
-          if (!mask) {
-            console.warn('[objects_3d] no mask for', obj.label);
-            continue;
-          }
-          const {points: raw, foregroundPixels} = sampleDepthInMask(
-            mask,
-            box2d
-          );
-          mask.close();
-          const cat = categorize(obj.label);
-          // Category-specific outlier rejection. Flats skip upfront rejection
-          // entirely so RANSAC sees the full point set and finds the
-          // dominant plane (mask points off the wall become outliers there).
-          let points;
-          if (cat === 'flat') {
-            points = raw;
-          } else if (cat === 'small') {
-            points = rejectByAnchor(raw, obj.position, 0.25);
-          } else if (cat === 'light') {
-            // Drop cord/ceiling stragglers: 3D ball around the SDK anchor
-            // (which sits on the lampshade), then tight Y cluster.
-            points = rejectByY(rejectByAnchor(raw, obj.position, 0.5), 0.15);
-          } else {
-            points = rejectByAnchor(raw, obj.position, 0.7);
-          }
+            const box2d = obj.detection2DBoundingBox;
+            const cx = (box2d.min.x + box2d.max.x) * 0.5;
+            const cy = (box2d.min.y + box2d.max.y) * 0.5;
+            let segResult;
+            try {
+              segResult = segmenter.segment(snapshot, {
+                keypoint: {x: cx, y: cy},
+              });
+            } catch (e) {
+              console.warn('[objects_3d] segment threw for', obj.label, e);
+              continue;
+            }
+            const mask = segResult.categoryMask;
+            if (!mask) {
+              console.warn('[objects_3d] no mask for', obj.label);
+              continue;
+            }
+            const {points: raw, foregroundPixels} = sampleDepthInMask(
+              mask,
+              box2d
+            );
+            mask.close();
+            const cat = categorize(obj.label);
+            // Category-specific outlier rejection. Flats skip upfront rejection
+            // entirely so RANSAC sees the full point set and finds the
+            // dominant plane (mask points off the wall become outliers there).
+            let points;
+            if (cat === 'flat') {
+              points = raw;
+            } else if (cat === 'small') {
+              points = rejectByAnchor(raw, obj.position, 0.25);
+            } else if (cat === 'light') {
+              // Drop cord/ceiling stragglers: 3D ball around the SDK anchor
+              // (which sits on the lampshade), then tight Y cluster.
+              points = rejectByY(rejectByAnchor(raw, obj.position, 0.5), 0.15);
+            } else {
+              points = rejectByAnchor(raw, obj.position, 0.7);
+            }
           const obb = fitYawOBB(points, {
             category: cat,
             camera: xb.core.camera,
@@ -807,6 +815,9 @@
           }
           boxes.add(buildBoxGroup(obb, obj.label || 'object', CAT_COLOR[cat] || 0x4cd964));
           kept++;
+          } catch (e) {
+            console.warn('[objects_3d] per-object pipeline threw for', obj.label, e);
+          }
         }
         setStatus(`fit ${kept} / ${detected.length} oriented boxes`);
       }
