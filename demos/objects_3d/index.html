@@ -562,7 +562,18 @@
           const dx = p.x - cx, dz = p.z - cz;
           Sxx += dx * dx; Sxz += dx * dz; Szz += dz * dz;
         }
-        const angle = 0.5 * Math.atan2(2 * Sxz, Sxx - Szz);
+        let angle = 0.5 * Math.atan2(2 * Sxz, Sxx - Szz);
+        // Snap to nearest cardinal (0/±90/180). Indoor furniture is almost
+        // always wall-aligned, and PCA on partial depth scans of one face is
+        // too noisy to trust the off-axis rotation. The rare genuinely-rotated
+        // chair will be off by a few degrees, which is a good trade.
+        const candidates = [0, Math.PI / 2, -Math.PI / 2, Math.PI, -Math.PI];
+        let bestSnap = angle, bestErr = Infinity;
+        for (const c of candidates) {
+          const err = Math.abs(((angle - c + Math.PI) % (2 * Math.PI)) - Math.PI);
+          if (err < bestErr) { bestErr = err; bestSnap = c; }
+        }
+        angle = bestSnap;
         const cs = Math.cos(angle), sn = Math.sin(angle);
         // Project all points to local axes.
         const us = [], vs = [], ysProj = [];
