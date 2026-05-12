@@ -277,132 +277,294 @@
         return {points, foregroundPixels: fg};
       }
 
-      // Drop points more than `radius` metres away from `anchor`. Anchor is
-      // the SDK-computed centre point of the detection (already a depth-mesh
-      // raycast hit), so this filter peels off background / foreground noise
-      // bleeding into the 2D box.
-      function rejectOutliers(points, anchor, radius = 1.0) {
-        return points.filter((p) => p.distanceTo(anchor) < radius);
-      }
-
-      // Yaw-constrained oriented bounding box. We assume gravity-aligned objects
-      // (Y is up), do PCA in the horizontal plane to get yaw, take min/max
-      // extents in that rotated frame for footprint, and use min/max world Y
-      // for height. This is way more stable than full 3D PCA on noisy depth.
+      // Label categorisation. Each category gets a different fitting
+      // strategy because the failure modes differ:
+      //   - flat:      mask spillover blows up extents; orientation matters
+      //   - light:     hanging fixtures pick up cord/ceiling, need clustering
+      //   - small:     depth-mesh resolution is coarser than the object
+      //   - furniture: well-defined footprints, mask is reliable
       const FLAT_LABEL_RE =
         /\b(art|artwork|painting|picture|poster|photo|photograph|mirror|frame|window|whiteboard|screen|monitor|tv|television|display|door)\b/i;
+      const LIGHT_LABEL_RE =
+        /\b(lamp|light|lightbulb|fixture|chandelier|sconce|pendant|lantern|bulb)\b/i;
+      const SMALL_LABEL_RE =
+        /\b(cup|mug|glass|bottle|book|magazine|remote|phone|pen|pencil|bowl|plate|coaster|candle|vase|pot|toy|tissue|controller|keys|wallet|clock)\b/i;
       function isFlatLabel(label) {
         return !!label && FLAT_LABEL_RE.test(label);
       }
+      function categorize(label) {
+        if (!label) return 'furniture';
+        if (FLAT_LABEL_RE.test(label)) return 'flat';
+        if (LIGHT_LABEL_RE.test(label)) return 'light';
+        if (SMALL_LABEL_RE.test(label)) return 'small';
+        return 'furniture';
+      }
 
+      // Drop points more than `radius` metres from `anchor` in 3D. Anchor is
+      // the SDK's depth-raycast through the bbox centre — generally a clean
+      // hit on the object surface, so this 3D ball filter is much more
+      // selective than camera-distance filtering for non-flat objects.
+      function rejectByAnchor(points, anchor, radius) {
+        if (!anchor || points.length < 4) return points;
+        const kept = points.filter((p) => p.distanceTo(anchor) < radius);
+        return kept.length >= 6 ? kept : points;
+      }
+
+      // Drop points whose distance-to-camera differs by more than `tol`
+      // metres from the median.
+      function rejectByDepth(points, camera, tol) {
+        if (!camera || points.length < 4) return points;
+        const ds = points.map((p) => p.distanceTo(camera));
+        const sorted = ds.slice().sort((a, b) => a - b);
+        const med = sorted[Math.floor(sorted.length / 2)];
+        const kept = points.filter((_, i) => Math.abs(ds[i] - med) < tol);
+        return kept.length >= 6 ? kept : points;
+      }
+
+      // Keep only points within ±dy of the median Y. Used for hanging
+      // fixtures where cord/ceiling stragglers extend vertically but the
+      // lampshade itself is compact in Y.
+      function rejectByY(points, dy) {
+        if (points.length < 4) return points;
+        const ys = points.map((p) => p.y).sort((a, b) => a - b);
+        const med = ys[Math.floor(ys.length / 2)];
+        const kept = points.filter((p) => Math.abs(p.y - med) < dy);
+        return kept.length >= 6 ? kept : points;
+      }
+
+      // RANSAC plane fitter. Picks 3 random points, builds a plane, counts
+      // inliers within `eps`, repeats `iters` times. Returns the plane with
+      // the most inliers, refined: point = inlier centroid, normal kept from
+      // the winning sample. Robust to ~50% outliers (corner spillover etc).
+      function ransacPlane(points, iters = 80, eps = 0.02) {
+        if (points.length < 3) return null;
+        let best = {inliers: [], normal: null, point: null};
+        const ab = new THREE.Vector3();
+        const ac = new THREE.Vector3();
+        const n = new THREE.Vector3();
+        for (let it = 0; it < iters; it++) {
+          const ia = (Math.random() * points.length) | 0;
+          const ib = (Math.random() * points.length) | 0;
+          const ic = (Math.random() * points.length) | 0;
+          if (ia === ib || ib === ic || ia === ic) continue;
+          const a = points[ia], b = points[ib], c = points[ic];
+          ab.subVectors(b, a);
+          ac.subVectors(c, a);
+          n.crossVectors(ab, ac);
+          if (n.lengthSq() < 1e-8) continue;
+          n.normalize();
+          const d = -n.dot(a);
+          let count = 0;
+          for (const p of points) {
+            if (Math.abs(n.dot(p) + d) < eps) count++;
+          }
+          if (count > best.inliers.length) {
+            const inliers = points.filter(
+              (p) => Math.abs(n.dot(p) + d) < eps
+            );
+            best = {inliers, normal: n.clone(), point: a};
+          }
+        }
+        if (!best.normal || best.inliers.length < 6) return null;
+        // Refit: centroid of inliers as plane point.
+        const c = new THREE.Vector3();
+        for (const p of best.inliers) c.add(p);
+        c.multiplyScalar(1 / best.inliers.length);
+        return {normal: best.normal, point: c, inliers: best.inliers};
+      }
+
+      // Shoot a ray through normalized image coords (u, v) ∈ [0,1] (top-left
+      // origin) into the scene, intersect with the plane (planePoint,
+      // planeNormal). Returns world-space hit point or null.
+      const _bboxRay = new THREE.Raycaster();
+      const _bboxNdc = new THREE.Vector2();
+      const _diff = new THREE.Vector3();
+      function rayToPlane(u, v, camera, planePoint, planeNormal) {
+        _bboxNdc.set(u * 2 - 1, (1 - v) * 2 - 1);
+        _bboxRay.setFromCamera(_bboxNdc, camera);
+        const denom = _bboxRay.ray.direction.dot(planeNormal);
+        if (Math.abs(denom) < 1e-6) return null;
+        _diff.subVectors(planePoint, _bboxRay.ray.origin);
+        const t = _diff.dot(planeNormal) / denom;
+        if (t <= 0) return null;
+        return _bboxRay.ray.origin
+          .clone()
+          .addScaledVector(_bboxRay.ray.direction, t);
+      }
+
+      // Project the 4 bbox corners onto the plane. Returns {TL, TR, BR, BL}
+      // or null if any corner misses the plane.
+      function projectBboxToPlane(box2d, camera, planePoint, planeNormal) {
+        const TL = rayToPlane(box2d.min.x, box2d.min.y, camera, planePoint, planeNormal);
+        const TR = rayToPlane(box2d.max.x, box2d.min.y, camera, planePoint, planeNormal);
+        const BR = rayToPlane(box2d.max.x, box2d.max.y, camera, planePoint, planeNormal);
+        const BL = rayToPlane(box2d.min.x, box2d.max.y, camera, planePoint, planeNormal);
+        if (!TL || !TR || !BR || !BL) return null;
+        return {TL, TR, BR, BL};
+      }
+
+      // ------- Fitter dispatcher -------
+      // Each fitter returns {center: Vector3, size: Vector3, angle: number}
+      // where `angle` is yaw around world Y. center.y / size.y are world Y.
       function fitYawOBB(points, opts = {}) {
+        const cat = opts.category || 'furniture';
+        if (cat === 'flat') {
+          const r = fitFlatOBB(points, opts);
+          if (r) return r;
+        }
+        if (cat === 'small') {
+          const r = fitSmallOBB(points, opts);
+          if (r) return r;
+        }
+        if (cat === 'light') {
+          const r = fitLightOBB(points, opts);
+          if (r) return r;
+        }
+        return fitFurnitureOBB(points);
+      }
+
+      // Flat objects (paintings, TVs, windows, mirrors): fit a plane via
+      // RANSAC, then reproject Gemini's clean 2D bbox onto that plane to get
+      // tight extents that are immune to mask spillover.
+      function fitFlatOBB(points, opts) {
         if (points.length < 6) return null;
-
-        // Flat-object path: orient the slab to lie ON the wall by fitting a
-        // line through the mask points in the XZ plane (2D PCA). The line
-        // direction is the wall's horizontal axis; its perpendicular is the
-        // wall normal. We force the slab's thin local-Z axis to be that
-        // normal (pointing toward the camera so the front face is visible).
-        if (opts.flat) {
-          // Trim depth outliers: corner-mounted flats often pick up mask
-          // pixels on the adjacent wall, which corrupts plane fitting.
-          // Keep only points within ±8cm of the median camera-distance.
-          let pts = points;
-          if (opts.camera) {
-            const cam = opts.camera;
-            const ds = points.map(p => {
-              const dx = p.x - cam.x, dy = p.y - cam.y, dz = p.z - cam.z;
-              return Math.sqrt(dx * dx + dy * dy + dz * dz);
-            });
-            const sorted = ds.slice().sort((a, b) => a - b);
-            const med = sorted[Math.floor(sorted.length / 2)];
-            pts = points.filter((_, i) => Math.abs(ds[i] - med) < 0.08);
-            if (pts.length < 6) pts = points;
-          }
-          // 2D PCA in XZ.
-          let cx = 0, cz = 0;
-          for (const p of pts) { cx += p.x; cz += p.z; }
-          cx /= pts.length; cz /= pts.length;
-          let Sxx = 0, Sxz = 0, Szz = 0;
-          for (const p of pts) {
-            const dx = p.x - cx, dz = p.z - cz;
-            Sxx += dx * dx; Sxz += dx * dz; Szz += dz * dz;
-          }
-          // wallAngle = orientation of the dominant in-plane direction.
-          const wallAngle = 0.5 * Math.atan2(2 * Sxz, Sxx - Szz);
-          // Box yaw: local X = wall direction = (cos a, 0, -sin a). With
-          // a = wallAngle we get local X aligned to the dominant axis, and
-          // local Z = (sin a, 0, cos a) is the wall normal.
-          let angle = wallAngle;
-          // Flip so local Z points toward the camera (front face visible).
-          if (opts.camera) {
-            const nx = Math.sin(angle), nz = Math.cos(angle);
-            const dxc = opts.camera.x - cx, dzc = opts.camera.z - cz;
-            if (nx * dxc + nz * dzc < 0) angle += Math.PI;
-          }
+        const plane = ransacPlane(points, 100, 0.02);
+        if (!plane) return null;
+        // Force normal to be horizontal (gravity-aligned wall) and pointing
+        // toward the camera so the front face is visible.
+        const n = new THREE.Vector3(plane.normal.x, 0, plane.normal.z);
+        if (n.lengthSq() < 1e-6) return null;
+        n.normalize();
+        if (opts.camera) {
+          _diff.subVectors(opts.camera.position, plane.point);
+          if (n.dot(_diff) < 0) n.multiplyScalar(-1);
+        }
+        const angle = Math.atan2(n.x, n.z);
+        // Reproject bbox onto plane. Fall back to inlier extents if it fails.
+        let center, sizeU, sizeY;
+        const corners = opts.box2d && opts.camera
+          ? projectBboxToPlane(opts.box2d, opts.camera, plane.point, n)
+          : null;
+        if (corners) {
           const cs = Math.cos(angle), sn = Math.sin(angle);
-          // Project points onto local X (in-wall horizontal) and collect Y.
-          const us = [], ys = [];
-          for (const p of pts) {
-            const dx = p.x - cx, dz = p.z - cz;
-            us.push(dx * cs - dz * sn);
-            ys.push(p.y);
+          // local X axis (in-wall horizontal): (cos a, 0, -sin a)
+          const all = [corners.TL, corners.TR, corners.BR, corners.BL];
+          let umin = Infinity, umax = -Infinity;
+          let ymin = Infinity, ymax = -Infinity;
+          let cx = 0, cz = 0;
+          for (const c of all) {
+            const u = (c.x - plane.point.x) * cs - (c.z - plane.point.z) * sn;
+            if (u < umin) umin = u;
+            if (u > umax) umax = u;
+            if (c.y < ymin) ymin = c.y;
+            if (c.y > ymax) ymax = c.y;
+            cx += c.x; cz += c.z;
           }
-          us.sort((a, b) => a - b);
-          ys.sort((a, b) => a - b);
-          const pct = (arr, q) => arr[Math.min(arr.length - 1,
-            Math.max(0, Math.floor(q * (arr.length - 1))))];
-          const umin = pct(us, 0.05);
-          const umax = pct(us, 0.95);
-          const ymin = pct(ys, 0.05);
-          const ymax = pct(ys, 0.95);
+          cx /= 4; cz /= 4;
+          sizeU = Math.max(0.05, umax - umin);
+          sizeY = Math.max(0.05, ymax - ymin);
+          center = new THREE.Vector3(cx, (ymin + ymax) / 2, cz);
+        } else {
+          // Fallback: inlier-based extents along plane axes.
+          const cs = Math.cos(angle), sn = Math.sin(angle);
+          let umin = Infinity, umax = -Infinity;
+          let ymin = Infinity, ymax = -Infinity;
+          for (const p of plane.inliers) {
+            const u = (p.x - plane.point.x) * cs - (p.z - plane.point.z) * sn;
+            if (u < umin) umin = u;
+            if (u > umax) umax = u;
+            if (p.y < ymin) ymin = p.y;
+            if (p.y > ymax) ymax = p.y;
+          }
           const uc = (umin + umax) / 2;
-          const yc = (ymin + ymax) / 2;
-          const sizeU = Math.max(0.05, umax - umin);
-          const sizeY = Math.max(0.05, ymax - ymin);
-          const sizeV = 0.05;
-          // Center: shift along local X by uc, keep on wall line in XZ.
-          return {
-            center: new THREE.Vector3(cx + uc * cs, yc, cz - uc * sn),
-            size: new THREE.Vector3(sizeU, sizeY, sizeV),
-            angle,
-          };
+          sizeU = Math.max(0.05, umax - umin);
+          sizeY = Math.max(0.05, ymax - ymin);
+          center = new THREE.Vector3(
+            plane.point.x + uc * cs,
+            (ymin + ymax) / 2,
+            plane.point.z - uc * sn
+          );
         }
+        return {center, size: new THREE.Vector3(sizeU, sizeY, 0.05), angle};
+      }
 
-        let cx = 0,
-          cy = 0,
-          cz = 0;
-        for (const p of points) {
-          cx += p.x;
-          cy += p.y;
-          cz += p.z;
+      // Small objects (cups, books, controllers): depth-mesh resolution is
+      // worse than the object itself, so mask points are unreliable. Use the
+      // bbox projected through the median depth and trust Gemini's pixel
+      // extents. Camera-facing axis-aligned-ish box.
+      function fitSmallOBB(points, opts) {
+        if (!opts.box2d || !opts.camera || points.length < 3) return null;
+        const camPos = opts.camera.position;
+        // Median camera-distance defines the depth.
+        const ds = points.map((p) => p.distanceTo(camPos));
+        const sorted = ds.slice().sort((a, b) => a - b);
+        const depth = sorted[Math.floor(sorted.length / 2)];
+        // Build a camera-facing plane at the median depth, gravity-aligned.
+        const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(opts.camera.quaternion);
+        fwd.y = 0;
+        if (fwd.lengthSq() < 1e-6) return null;
+        fwd.normalize();
+        const planePoint = camPos.clone().addScaledVector(fwd, depth);
+        const planeNormal = fwd.clone().multiplyScalar(-1);
+        const corners = projectBboxToPlane(
+          opts.box2d, opts.camera, planePoint, planeNormal
+        );
+        if (!corners) return null;
+        const angle = Math.atan2(planeNormal.x, planeNormal.z);
+        const cs = Math.cos(angle), sn = Math.sin(angle);
+        const all = [corners.TL, corners.TR, corners.BR, corners.BL];
+        let umin = Infinity, umax = -Infinity;
+        let ymin = Infinity, ymax = -Infinity;
+        let cx = 0, cz = 0;
+        for (const c of all) {
+          const u = (c.x - planePoint.x) * cs - (c.z - planePoint.z) * sn;
+          if (u < umin) umin = u;
+          if (u > umax) umax = u;
+          if (c.y < ymin) ymin = c.y;
+          if (c.y > ymax) ymax = c.y;
+          cx += c.x; cz += c.z;
         }
-        cx /= points.length;
-        cy /= points.length;
-        cz /= points.length;
+        cx /= 4; cz /= 4;
+        const sizeU = Math.max(0.02, umax - umin);
+        const sizeY = Math.max(0.02, ymax - ymin);
+        // Depth (thickness): use mask point depth spread, clamp small.
+        const dmin = sorted[0], dmax = sorted[sorted.length - 1];
+        const sizeV = Math.max(0.05, Math.min(0.4, dmax - dmin));
+        return {
+          center: new THREE.Vector3(cx, (ymin + ymax) / 2, cz),
+          size: new THREE.Vector3(sizeU, sizeY, sizeV),
+          angle,
+        };
+      }
 
-        let Sxx = 0,
-          Sxz = 0,
-          Szz = 0;
+      // Hanging lights / lamps: mask often picks up the cord and bits of
+      // ceiling. Cluster on the densest depth bin (the lampshade) and fit
+      // furniture-style on that subset.
+      function fitLightOBB(points, opts) {
+        if (points.length < 6) return null;
+        // Tight depth filter (5cm) — lampshade is roughly planar in depth.
+        const tight = rejectByDepth(points, opts.camera.position, 0.10);
+        return fitFurnitureOBB(tight);
+      }
+
+      // Furniture: yaw-constrained PCA in XZ + min/max extents.
+      function fitFurnitureOBB(points) {
+        if (points.length < 6) return null;
+        let cx = 0, cy = 0, cz = 0;
+        for (const p of points) { cx += p.x; cy += p.y; cz += p.z; }
+        cx /= points.length; cy /= points.length; cz /= points.length;
+        let Sxx = 0, Sxz = 0, Szz = 0;
         for (const p of points) {
-          const dx = p.x - cx;
-          const dz = p.z - cz;
-          Sxx += dx * dx;
-          Sxz += dx * dz;
-          Szz += dz * dz;
+          const dx = p.x - cx, dz = p.z - cz;
+          Sxx += dx * dx; Sxz += dx * dz; Szz += dz * dz;
         }
         const angle = 0.5 * Math.atan2(2 * Sxz, Sxx - Szz);
-        const cs = Math.cos(angle);
-        const sn = Math.sin(angle);
-        let umin = Infinity,
-          umax = -Infinity,
-          vmin = Infinity,
-          vmax = -Infinity,
-          ymin = Infinity,
-          ymax = -Infinity;
+        const cs = Math.cos(angle), sn = Math.sin(angle);
+        let umin = Infinity, umax = -Infinity,
+          vmin = Infinity, vmax = -Infinity,
+          ymin = Infinity, ymax = -Infinity;
         for (const p of points) {
-          const dx = p.x - cx;
-          const dz = p.z - cz;
+          const dx = p.x - cx, dz = p.z - cz;
           const u = dx * cs + dz * sn;
           const v = -dx * sn + dz * cs;
           if (u < umin) umin = u;
@@ -414,11 +576,10 @@
         }
         const uc = (umin + umax) / 2;
         const vc = (vmin + vmax) / 2;
-        const yc = (ymin + ymax) / 2;
         const offX = uc * cs - vc * sn;
         const offZ = uc * sn + vc * cs;
         return {
-          center: new THREE.Vector3(cx + offX, yc, cz + offZ),
+          center: new THREE.Vector3(cx + offX, (ymin + ymax) / 2, cz + offZ),
           size: new THREE.Vector3(
             Math.max(0.02, umax - umin),
             Math.max(0.02, ymax - ymin),
@@ -427,6 +588,7 @@
           angle,
         };
       }
+
 
       function buildBoxGroup(obb, label, color = 0x4cd964) {
         const group = new THREE.Group();
@@ -554,15 +716,33 @@
             box2d
           );
           mask.close();
-          const points = rejectOutliers(raw, obj.position);
+          const cat = categorize(obj.label);
+          // Category-specific outlier rejection. Flats skip upfront rejection
+          // entirely so RANSAC sees the full point set and finds the
+          // dominant plane (mask points off the wall become outliers there).
+          let points;
+          if (cat === 'flat') {
+            points = raw;
+          } else if (cat === 'small') {
+            points = rejectByAnchor(raw, obj.position, 0.25);
+          } else if (cat === 'light') {
+            // Drop cord/ceiling stragglers: 3D ball around the SDK anchor
+            // (which sits on the lampshade), then tight Y cluster.
+            points = rejectByY(rejectByAnchor(raw, obj.position, 0.5), 0.15);
+          } else {
+            points = rejectByAnchor(raw, obj.position, 1.0);
+          }
           const obb = fitYawOBB(points, {
-            flat: isFlatLabel(obj.label),
+            category: cat,
+            box2d,
             anchor: obj.position,
-            camera: xb.core.camera.position,
+            camera: xb.core.camera,
           });
           console.log(
             '[objects_3d] obj',
             obj.label,
+            'cat',
+            cat,
             'fg',
             foregroundPixels,
             'raw',
