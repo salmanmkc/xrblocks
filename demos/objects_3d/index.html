@@ -212,10 +212,6 @@
 
       const boxes = new THREE.Group();
       let xrStatusText = null;
-      // Expose state for Playwright-driven iteration. Local-only debug hook.
-      window.__demo = {boxes};
-      // Also expose the xrblocks namespace once init runs (populated below).
-      window.__xb = null;
 
       // Lazy-loaded InteractiveSegmenter. Given a click point inside an image,
       // returns a per-pixel mask of the object the user "tapped". We use the
@@ -779,13 +775,6 @@
           );
           if (!obb) continue;
           boxes.add(buildBoxGroup(obb, obj.label || 'object'));
-          console.log(
-            '[objects_3d] FIT', obj.label, 'cat', cat,
-            'center', obb.center.toArray().map((v) => +v.toFixed(2)),
-            'size', obb.size.toArray().map((v) => +v.toFixed(2)),
-            'angleDeg', +(obb.angle * 180 / Math.PI).toFixed(1),
-            'sdkAnchor', obj.position.toArray().map((v) => +v.toFixed(2))
-          );
           kept++;
         }
         setStatus(`fit ${kept} / ${detected.length} oriented boxes`);
@@ -807,7 +796,6 @@
 
       xb.init(options);
       xb.core.scene.add(boxes);
-      window.__xb = xb;
 
       const xrPanel = new xb.SpatialPanel({
         width: 0.3,
