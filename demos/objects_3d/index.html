@@ -283,7 +283,7 @@
       //   - small:     depth-mesh resolution is coarser than the object
       //   - furniture: well-defined footprints, mask is reliable
       const FLAT_LABEL_RE =
-        /\b(art|artwork|painting|picture|poster|photo|photograph|mirror|frame|window|whiteboard|screen|monitor|tv|television|display|door)\b/i;
+        /\b(art|artwork|painting|picture|poster|photo|photograph|mirror|frame|window|whiteboard|screen|monitor|tv|television|display|door|switch|outlet|socket|thermostat|plug|vent|register)\b/i;
       const LIGHT_LABEL_RE =
         /\b(lamp|lamps|lampshade|light|lightbulb|fixture|chandelier|sconce|pendant|lantern|bulb)\b/i;
       const SMALL_LABEL_RE =
@@ -875,7 +875,7 @@
           const c = obb.center;
           const farFromRoom =
             Math.abs(c.x) > 6 || Math.abs(c.z) > 6 || c.y < -1 || c.y > 5;
-          const minPoints = cat === 'small' ? 4 : cat === 'light' ? 8 : 20;
+          const minPoints = cat === 'small' ? 4 : cat === 'light' ? 8 : cat === 'flat' ? 8 : 20;
           const tooFewPoints = points.length < minPoints;
           const oversize =
             obb.size.x > 4 || obb.size.y > 3 || obb.size.z > 4;
