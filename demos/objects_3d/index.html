@@ -288,8 +288,13 @@
         /\b(lamp|lamps|lampshade|light|lightbulb|fixture|chandelier|sconce|pendant|lantern|bulb)\b/i;
       const SMALL_LABEL_RE =
         /\b(cup|mug|glass|bottle|book|magazine|remote|phone|pen|pencil|bowl|plate|coaster|candle|vase|pot|toy|tissue|controller|keys|wallet|clock)\b/i;
+      const TINY_FLAT_LABEL_RE =
+        /\b(switch|outlet|socket|thermostat|plug|vent|register|knob|handle|doorknob)\b/i;
       function isFlatLabel(label) {
         return !!label && FLAT_LABEL_RE.test(label);
+      }
+      function isTinyFlatLabel(label) {
+        return !!label && TINY_FLAT_LABEL_RE.test(label);
       }
       function categorize(label) {
         if (!label) return 'furniture';
@@ -408,6 +413,10 @@
       function fitYawOBB(points, opts = {}) {
         const cat = opts.category || 'furniture';
         if (cat === 'flat') {
+          if (opts.tinyFlat) {
+            const r = fitTinyFlatOBB(opts);
+            if (r) return r;
+          }
           const r = fitFlatOBB(points, opts);
           if (r) return r;
         }
@@ -420,6 +429,105 @@
           if (r) return r;
         }
         return fitFurnitureOBB(points);
+      }
+
+      // Tiny wall-mounted flats (switches, outlets, thermostats, vents).
+      // Their depth back-projection is unreliable — tiny pixel footprint at
+      // frame edges, depth-mesh artefacts. Instead: cast a ray from the
+      // camera through the bbox centre, extend to a reasonable wall hit, snap
+      // to the nearest cardinal wall plane (±X / ±Z), and project the bbox
+      // corners onto that wall to size the box.
+      const _tfRay = new THREE.Raycaster();
+      const _tfNdc = new THREE.Vector2();
+      function fitTinyFlatOBB(opts) {
+        if (!opts.box2d || !opts.camera) return null;
+        const cam = opts.camera;
+        const cx = (opts.box2d.min.x + opts.box2d.max.x) * 0.5;
+        const cy = (opts.box2d.min.y + opts.box2d.max.y) * 0.5;
+        _tfNdc.set(cx * 2 - 1, (1 - cy) * 2 - 1);
+        _tfRay.setFromCamera(_tfNdc, cam);
+        const o = _tfRay.ray.origin, d = _tfRay.ray.direction;
+        // Use the SDK anchor distance if it looks plausible (within a 6m room),
+        // otherwise pick the closest cardinal wall the ray hits.
+        let anchorOk = false;
+        if (opts.anchor) {
+          const a = opts.anchor;
+          if (Math.abs(a.x) <= 4 && Math.abs(a.z) <= 4 && a.y >= -0.5 && a.y <= 4) {
+            anchorOk = true;
+          }
+        }
+        // Find nearest cardinal wall hit. Walls assumed at x = ±roomHalf and
+        // z = ±roomHalf with roomHalf=3m (matches the wood-cabin sim).
+        const roomHalf = 3.0;
+        const candidates = [
+          {n: new THREE.Vector3( 1, 0, 0), d: -roomHalf},  // x = -3
+          {n: new THREE.Vector3(-1, 0, 0), d: -roomHalf},  // x = +3
+          {n: new THREE.Vector3(0, 0,  1), d: -roomHalf},  // z = -3
+          {n: new THREE.Vector3(0, 0, -1), d: -roomHalf},  // z = +3
+        ];
+        let best = null;
+        for (const c of candidates) {
+          const denom = d.dot(c.n);
+          if (Math.abs(denom) < 1e-4) continue;
+          const num = -(o.dot(c.n) + c.d);
+          const t = num / denom;
+          if (t <= 0.05) continue;
+          const hit = o.clone().addScaledVector(d, t);
+          if (Math.abs(hit.x) > roomHalf + 0.5 || Math.abs(hit.z) > roomHalf + 0.5) continue;
+          if (!best || t < best.t) best = {t, hit, n: c.n.clone()};
+        }
+        if (!best) return null;
+        // If the SDK anchor is much closer than the wall and looks plausible,
+        // prefer the anchor's depth (handles cabinets, half-walls etc.).
+        let center;
+        let normal = best.n;
+        if (anchorOk) {
+          const camToAnchor = opts.anchor.distanceTo(cam.position);
+          if (camToAnchor < best.t * 0.8) {
+            // Snap anchor onto nearest cardinal-aligned wall plane.
+            const a = opts.anchor;
+            const dx = roomHalf - Math.abs(a.x);
+            const dz = roomHalf - Math.abs(a.z);
+            if (dx < dz) {
+              center = new THREE.Vector3(Math.sign(a.x) * roomHalf, a.y, a.z);
+              normal = new THREE.Vector3(-Math.sign(a.x), 0, 0);
+            } else {
+              center = new THREE.Vector3(a.x, a.y, Math.sign(a.z) * roomHalf);
+              normal = new THREE.Vector3(0, 0, -Math.sign(a.z));
+            }
+          } else {
+            center = best.hit;
+          }
+        } else {
+          center = best.hit;
+        }
+        // Make sure the normal faces the camera so the front face is visible.
+        const toCam = cam.position.clone().sub(center);
+        if (normal.dot(toCam) < 0) normal.multiplyScalar(-1);
+        // Project the bbox corners onto the wall plane to size the box.
+        const corners = projectBboxToPlane(opts.box2d, cam, center, normal);
+        if (!corners) return null;
+        const angle = Math.atan2(normal.x, normal.z);
+        const cs = Math.cos(angle), sn = Math.sin(angle);
+        let umin = Infinity, umax = -Infinity;
+        let ymin = Infinity, ymax = -Infinity;
+        let cxw = 0, czw = 0;
+        for (const c of [corners.TL, corners.TR, corners.BR, corners.BL]) {
+          const u = (c.x - center.x) * cs - (c.z - center.z) * sn;
+          if (u < umin) umin = u;
+          if (u > umax) umax = u;
+          if (c.y < ymin) ymin = c.y;
+          if (c.y > ymax) ymax = c.y;
+          cxw += c.x; czw += c.z;
+        }
+        cxw /= 4; czw /= 4;
+        const sizeU = Math.max(0.04, Math.min(0.4, umax - umin));
+        const sizeY = Math.max(0.04, Math.min(0.4, ymax - ymin));
+        return {
+          center: new THREE.Vector3(cxw, (ymin + ymax) / 2, czw),
+          size: new THREE.Vector3(sizeU, sizeY, 0.04),
+          angle,
+        };
       }
 
       // Flat objects (paintings, TVs, windows, mirrors): fit a plane via
@@ -859,12 +967,18 @@
               // (which sits on the lampshade), then tight Y cluster.
               points = rejectByY(rejectByAnchor(raw, obj.position, 0.5), 0.15);
             } else {
-              points = rejectByAnchor(raw, obj.position, 0.7);
+              // Wide furniture (sofa, dining table, bed) routinely spans more
+              // than 0.7m from the anchor; tighter radii crop the box. 1.4m
+              // covers ~2.8m-wide pieces and is still selective against
+              // unrelated nearby geometry.
+              points = rejectByAnchor(raw, obj.position, 1.4);
             }
           const obb = fitYawOBB(points, {
             category: cat,
             camera: xb.core.camera,
             anchor: obj.position,
+            box2d,
+            tinyFlat: isTinyFlatLabel(obj.label),
           });
           if (!obb) continue;
           // Reject implausible detections: too far from origin (likely
@@ -876,7 +990,8 @@
           const farFromRoom =
             Math.abs(c.x) > 6 || Math.abs(c.z) > 6 || c.y < -1 || c.y > 5;
           const minPoints = cat === 'small' ? 4 : cat === 'light' ? 8 : cat === 'flat' ? 8 : 20;
-          const tooFewPoints = points.length < minPoints;
+          const tinyFlat = isTinyFlatLabel(obj.label);
+          const tooFewPoints = !tinyFlat && points.length < minPoints;
           const oversize =
             obb.size.x > 4 || obb.size.y > 3 || obb.size.z > 4;
           if (farFromRoom || tooFewPoints || oversize) {
