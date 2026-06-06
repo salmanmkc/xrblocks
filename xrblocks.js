@@ -14,15 +14,15 @@
  * limitations under the License.
  *
  * @file xrblocks.js
- * @version v0.11.0
- * @commitid 703c117
- * @builddate 2026-03-26T22:09:23.507Z
+ * @version v0.15.0
+ * @commitid 652461f
+ * @builddate 2026-06-06T02:00:28.203Z
  * @description XR Blocks SDK, built from source with the above commit ID.
  * @agent When using with Gemini to create XR apps, use **Gemini Canvas** mode,
  * and follow rules below:
  * 1. Include the following importmap for maximum compatibility:
-    "three": "https://cdn.jsdelivr.net/npm/three@0.182.0/build/three.module.js",
-    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.182.0/examples/jsm/",
+    "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/",
     "troika-three-text": "https://cdn.jsdelivr.net/gh/protectwise/troika@028b81cf308f0f22e5aa8e78196be56ec1997af5/packages/troika-three-text/src/index.js",
     "troika-three-utils": "https://cdn.jsdelivr.net/gh/protectwise/troika@v0.52.4/packages/troika-three-utils/src/index.js",
     "troika-worker-utils": "https://cdn.jsdelivr.net/gh/protectwise/troika@v0.52.4/packages/troika-worker-utils/src/index.js",
@@ -938,7 +938,7 @@ class MeshScript extends ScriptMixinMeshScript {
 /**
  * Clamps a value between a minimum and maximum value.
  */
-function clamp(value, min, max) {
+function clamp$1(value, min, max) {
     return Math.min(Math.max(value, min), max);
 }
 /**
@@ -1110,8 +1110,9 @@ function parseBase64DataURL(dataURL) {
     }
 }
 
-const GEMINI_DEFAULT_FLASH_MODEL = 'gemini-2.5-flash';
-const GEMINI_DEFAULT_LIVE_MODEL = 'gemini-2.5-flash-native-audio-preview-12-2025';
+const GEMINI_DEFAULT_FLASH_MODEL = 'gemini-3.5-flash';
+const GEMINI_DEFAULT_LIVE_MODEL = 'gemini-3.1-flash-live-preview';
+const GEMINI_DEFAULT_IMAGE_MODEL = 'gemini-3.1-flash-image-preview';
 class GeminiOptions {
     constructor() {
         this.apiKey = '';
@@ -1404,7 +1405,7 @@ class Gemini extends BaseAIModel {
         console.error('Failed to query with exponential backoff:', lastError);
         return null;
     }
-    async generate(prompt, type = 'image', systemInstruction = 'Generate an image', model = 'gemini-2.5-flash-image') {
+    async generate(prompt, type = 'image', systemInstruction = 'Generate an image', model = GEMINI_DEFAULT_IMAGE_MODEL) {
         if (!this.isAvailable())
             return;
         let contents;
@@ -1652,6 +1653,12 @@ class AI extends Script {
         if (!this.isAvailable()) {
             throw new Error("AI is not available. Check if it's enabled and properly initialized.");
         }
+        if (this.model instanceof Gemini) {
+            return await this.model.query(input);
+        }
+        if (typeof input !== 'object' || input === null || !('prompt' in input)) {
+            throw new Error(`${this.options.model} only supports {prompt: string} query inputs.`);
+        }
         return await this.model.query(input, tools);
     }
     async startLiveSession(config = {}, model) {
@@ -1712,7 +1719,13 @@ class AI extends Script {
      */
     triggerKeyPopup() { }
     async generate(prompt, type = 'image', systemInstruction = 'Generate an image', model = undefined) {
-        return this.model.generate(prompt, type, systemInstruction, model);
+        if (!this.isAvailable()) {
+            throw new Error("AI is not available. Check if it's enabled and properly initialized.");
+        }
+        if (this.model instanceof Gemini) {
+            return this.model.generate(prompt, type, systemInstruction, model);
+        }
+        throw new Error(`${this.options.model} does not support generate().`);
     }
     /**
      * Create a sample keys.json file structure for reference
@@ -1833,7 +1846,7 @@ const DEFAULT_DEVICE_CAMERA_WIDTH = 1280;
  * Corresponds to a 720p resolution.
  */
 const DEFAULT_DEVICE_CAMERA_HEIGHT = 720;
-const XR_BLOCKS_ASSETS_PATH = 'https://cdn.jsdelivr.net/gh/xrblocks/assets@a500427f2dfc12312df1a75860460244bab3a146/';
+const XR_BLOCKS_ASSETS_PATH = 'https://cdn.jsdelivr.net/gh/xrblocks/assets@02bbbf2093d20bcefdac18c65d3ff0f2b94b7535/';
 
 /**
  * Recursively freezes an object and all its nested properties, making them
@@ -1883,6 +1896,12 @@ function deepMerge(obj1, obj2) {
                 typeof val2 === 'object') {
                 // If both values are objects, recurse
                 deepMerge(val1, val2);
+            }
+            else if (val2 && typeof val2 === 'object') {
+                // Clone val2 if val1 is not an object
+                const clone = Array.isArray(val2) ? [] : {};
+                deepMerge(clone, val2);
+                merged[key] = clone;
             }
             else {
                 // Otherwise, overwrite
@@ -2060,7 +2079,7 @@ function getCameraParametersSnapshot(camera, xrCameras, deviceCamera, targetDevi
  * Raycasts to the depth mesh to find the world position and normal at a given UV coordinate.
  * @param rgbUv - The UV coordinate to raycast from.
  * @param depthMeshSnapshot - The depth mesh to raycast against.
- * @param depthTransformParameters - The depth transform parameters.
+ * @param cameraParametersSnapshot - Parameters of the device camera relative to the render camera's world.
  * @returns The world position, normal, and depth at the given UV coordinate.
  */
 function transformRgbUvToWorld(rgbUv, depthMeshSnapshot, cameraParametersSnapshot) {
@@ -2085,54 +2104,77 @@ function transformRgbUvToWorld(rgbUv, depthMeshSnapshot, cameraParametersSnapsho
     };
 }
 /**
- * Asynchronously crops a base64 encoded image using a THREE.Box2 bounding box.
- * This function creates an in-memory image, draws a specified portion of it to
- * a canvas, and then returns the canvas content as a new base64 string.
- * @param base64Image - The base64 string of the source image. Can be a raw
- *     string or a full data URI.
- * @param boundingBox - The bounding box with relative coordinates (0-1) for
- *     cropping.
- * @returns A promise that resolves with the base64 string of the cropped image.
+ * Helper function to prepare a canvas for the bounding box for rendering purposes.
+ * Calculates the clamped bounding box and returns the canvas, context, and dimensions.
  */
-async function cropImage(base64Image, boundingBox) {
-    if (!base64Image) {
-        throw new Error('No image data provided for cropping.');
-    }
-    const img = new Image();
-    await new Promise((resolve, reject) => {
-        img.onload = resolve;
-        img.onerror = (err) => {
-            console.error('Error loading image for cropping:', err);
-            reject(new Error('Failed to load image for cropping.'));
-        };
-        img.src = base64Image.startsWith('data:image')
-            ? base64Image
-            : `data:image/png;base64,${base64Image}`;
-    });
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d');
-    // Create a unit box and find the intersection to clamp coordinates.
+function createBoundingBoxCanvasResult(width, height, boundingBox) {
     const unitBox = new THREE.Box2(new THREE.Vector2(0, 0), new THREE.Vector2(1, 1));
     const clampedBox = boundingBox.clone().intersect(unitBox);
     const cropSize = new THREE.Vector2();
     clampedBox.getSize(cropSize);
-    // If the resulting crop area has no size, return an empty image.
     if (cropSize.x === 0 || cropSize.y === 0) {
-        return 'data:image/png;base64,';
+        return null;
     }
-    // Calculate absolute pixel values from relative coordinates.
-    const sourceX = img.width * clampedBox.min.x;
-    const sourceY = img.height * clampedBox.min.y;
-    const sourceWidth = img.width * cropSize.x;
-    const sourceHeight = img.height * cropSize.y;
-    // Set canvas size to the cropped image size.
+    const sourceX = Math.floor(width * clampedBox.min.x);
+    const sourceY = Math.floor(height * clampedBox.min.y);
+    const sourceWidth = Math.ceil(width * cropSize.x);
+    const sourceHeight = Math.ceil(height * cropSize.y);
+    const canvas = document.createElement('canvas');
     canvas.width = sourceWidth;
     canvas.height = sourceHeight;
-    // Draw the cropped portion of the source image onto the canvas.
-    ctx.drawImage(img, sourceX, sourceY, sourceWidth, sourceHeight, // Source rectangle
-    0, 0, sourceWidth, sourceHeight // Destination rectangle
-    );
-    return canvas.toDataURL('image/png');
+    const ctx = canvas.getContext('2d');
+    return { canvas, ctx, sourceX, sourceY, sourceWidth, sourceHeight };
+}
+/**
+ * Asynchronously crops an image (provided as a base64 string or ImageData) using a THREE.Box2 bounding box.
+ * This function draws a specified portion of the image to a canvas and returns the canvas content as a new base64 string.
+ * @param imageSource - The source image as a base64 string or ImageData object.
+ * @param boundingBox - The bounding box with relative coordinates (0-1) for cropping.
+ * @returns A promise that resolves with the base64 string of the cropped image.
+ */
+async function cropImage(imageSource, boundingBox) {
+    if (!imageSource) {
+        throw new Error('No image data provided for cropping.');
+    }
+    let width;
+    let height;
+    let drawOp;
+    if (typeof imageSource === 'string') {
+        const img = new Image();
+        await new Promise((resolve, reject) => {
+            img.onload = resolve;
+            img.onerror = (err) => {
+                console.error('Error loading image for cropping:', err);
+                reject(new Error('Failed to load image for cropping.'));
+            };
+            img.src = imageSource.startsWith('data:image')
+                ? imageSource
+                : `data:image/png;base64,${imageSource}`;
+        });
+        width = img.width;
+        height = img.height;
+        drawOp = (ctx, canvasResult) => {
+            ctx.drawImage(img, canvasResult.sourceX, canvasResult.sourceY, canvasResult.sourceWidth, canvasResult.sourceHeight, 0, 0, canvasResult.sourceWidth, canvasResult.sourceHeight);
+        };
+    }
+    else if (imageSource instanceof ImageData) {
+        width = imageSource.width;
+        height = imageSource.height;
+        drawOp = (ctx, canvasResult) => {
+            ctx.putImageData(imageSource, -canvasResult.sourceX, -canvasResult.sourceY, canvasResult.sourceX, canvasResult.sourceY, canvasResult.sourceWidth, canvasResult.sourceHeight);
+        };
+    }
+    else {
+        console.warn('Unsupported image source type for cropping.');
+        return 'data:image/png;base64,';
+    }
+    const canvasResult = createBoundingBoxCanvasResult(width, height, boundingBox);
+    if (!canvasResult) {
+        console.warn('Unable to create CanvasResult for cropping.');
+        return 'data:image/png;base64,';
+    }
+    drawOp(canvasResult.ctx, canvasResult);
+    return canvasResult.canvas.toDataURL('image/png');
 }
 
 /**
@@ -2600,7 +2642,6 @@ class XRDeviceCamera extends VideoStream {
     }
     registerSimulatorCamera(simulatorCamera) {
         this.simulatorCamera = simulatorCamera;
-        this.init();
     }
     startXRCameraAccessFallback_(reason, error) {
         if (!this.isXRCameraAccessGranted_()) {
@@ -2679,13 +2720,25 @@ class Raycaster extends THREE.Raycaster {
         // Sorting function for the raycaster. Should return items from closest to furthest.
         this.sortFunction = defaultSortFunction;
     }
-    /** {@inheritDoc three#Raycaster.intersectObjects} */
+    /**
+     * Intersects a single object with the raycaster, using the custom sort function.
+     * @param object - The object to intersect with.
+     * @param recursive - Whether to intersect with the object's children.
+     * @param intersects - The array to store the intersections in.
+     * @returns The intersections found.
+     */
     intersectObject(object, recursive = true, intersects = []) {
         intersect(object, this, intersects, recursive);
         intersects.sort(this.sortFunction);
         return intersects;
     }
-    /** {@inheritDoc three#Raycaster.intersectObjects} */
+    /**
+     * Intersects multiple objects with the raycaster, using the custom sort function.
+     * @param objects - The objects to intersect with.
+     * @param recursive - Whether to intersect with the objects' children.
+     * @param intersects - The array to store the intersections in.
+     * @returns The intersections found.
+     */
     intersectObjects(objects, recursive = true, intersects = []) {
         for (let i = 0, l = objects.length; i < l; i++) {
             intersect(objects[i], this, intersects, recursive);
@@ -2944,24 +2997,298 @@ class ScreenshotSynthesizer {
     }
 }
 
-class ScriptsManager {
+var ScriptsManagerEventType;
+(function (ScriptsManagerEventType) {
+    ScriptsManagerEventType["EXCEPTION"] = "exception";
+})(ScriptsManagerEventType || (ScriptsManagerEventType = {}));
+class ScriptsManager extends THREE.EventDispatcher {
     constructor(initScriptFunction) {
+        super();
         this.initScriptFunction = initScriptFunction;
         /** The set of all currently initialized scripts. */
         this.scripts = new Set();
-        this.callSelectStartBound = this.callSelectStart.bind(this);
-        this.callSelectEndBound = this.callSelectEnd.bind(this);
-        this.callSelectBound = this.callSelect.bind(this);
-        this.callSqueezeStartBound = this.callSqueezeStart.bind(this);
-        this.callSqueezeEndBound = this.callSqueezeEnd.bind(this);
-        this.callSqueezeBound = this.callSqueeze.bind(this);
-        this.callKeyDownBound = this.callKeyDown.bind(this);
-        this.callKeyUpBound = this.callKeyUp.bind(this);
         /** The set of scripts currently being initialized. */
         this.initializingScripts = new Set();
         this.seenScripts = new Set();
         this.syncPromises = [];
-        this.checkScriptBound = this.checkScript.bind(this);
+        /** Whether to catch all exceptions thrown by developer scripts. */
+        this.catchExceptions = true;
+        /**
+         * Helper for scene traversal to avoid closure allocation.
+         */
+        this.checkScript = (obj) => {
+            if (obj.isXRScript) {
+                const script = obj;
+                this.syncPromises.push(this.initScript(script));
+                this.seenScripts.add(script);
+            }
+        };
+        this.resetUX = () => {
+            const catchExceptions = this.catchExceptions;
+            for (const script of this.scripts) {
+                if (catchExceptions) {
+                    try {
+                        script.ux.reset();
+                    }
+                    catch (error) {
+                        this.handleException(error instanceof Error ? error : new Error(String(error)), script, 'ux.reset');
+                    }
+                }
+                else {
+                    script.ux.reset();
+                }
+            }
+        };
+        this.callSelecting = (controller) => {
+            const catchExceptions = this.catchExceptions;
+            for (const script of this.scripts) {
+                if (catchExceptions) {
+                    try {
+                        script.onSelecting({ target: controller });
+                    }
+                    catch (error) {
+                        this.handleException(error instanceof Error ? error : new Error(String(error)), script, 'onSelecting');
+                    }
+                }
+                else {
+                    script.onSelecting({ target: controller });
+                }
+            }
+        };
+        this.callSqueezing = (controller) => {
+            const catchExceptions = this.catchExceptions;
+            for (const script of this.scripts) {
+                if (catchExceptions) {
+                    try {
+                        script.onSqueezing({ target: controller });
+                    }
+                    catch (error) {
+                        this.handleException(error instanceof Error ? error : new Error(String(error)), script, 'onSqueezing');
+                    }
+                }
+                else {
+                    script.onSqueezing({ target: controller });
+                }
+            }
+        };
+        this.update = (time, frame) => {
+            const catchExceptions = this.catchExceptions;
+            for (const script of this.scripts) {
+                if (catchExceptions) {
+                    try {
+                        script.update(time, frame);
+                    }
+                    catch (error) {
+                        this.handleException(error instanceof Error ? error : new Error(String(error)), script, 'update');
+                    }
+                }
+                else {
+                    script.update(time, frame);
+                }
+            }
+        };
+        this.physicsStep = () => {
+            const catchExceptions = this.catchExceptions;
+            for (const script of this.scripts) {
+                if (catchExceptions) {
+                    try {
+                        script.physicsStep();
+                    }
+                    catch (error) {
+                        this.handleException(error instanceof Error ? error : new Error(String(error)), script, 'physicsStep');
+                    }
+                }
+                else {
+                    script.physicsStep();
+                }
+            }
+        };
+        this.callSelectStart = (event) => {
+            const catchExceptions = this.catchExceptions;
+            for (const script of this.scripts) {
+                if (catchExceptions) {
+                    try {
+                        script.onSelectStart(event);
+                    }
+                    catch (error) {
+                        this.handleException(error instanceof Error ? error : new Error(String(error)), script, 'onSelectStart');
+                    }
+                }
+                else {
+                    script.onSelectStart(event);
+                }
+            }
+        };
+        this.callSelectEnd = (event) => {
+            const catchExceptions = this.catchExceptions;
+            for (const script of this.scripts) {
+                if (catchExceptions) {
+                    try {
+                        script.onSelectEnd(event);
+                    }
+                    catch (error) {
+                        this.handleException(error instanceof Error ? error : new Error(String(error)), script, 'onSelectEnd');
+                    }
+                }
+                else {
+                    script.onSelectEnd(event);
+                }
+            }
+        };
+        this.callSelect = (event) => {
+            const catchExceptions = this.catchExceptions;
+            for (const script of this.scripts) {
+                if (catchExceptions) {
+                    try {
+                        script.onSelect(event);
+                    }
+                    catch (error) {
+                        this.handleException(error instanceof Error ? error : new Error(String(error)), script, 'onSelect');
+                    }
+                }
+                else {
+                    script.onSelect(event);
+                }
+            }
+        };
+        this.callSqueezeStart = (event) => {
+            const catchExceptions = this.catchExceptions;
+            for (const script of this.scripts) {
+                if (catchExceptions) {
+                    try {
+                        script.onSqueezeStart(event);
+                    }
+                    catch (error) {
+                        this.handleException(error instanceof Error ? error : new Error(String(error)), script, 'onSqueezeStart');
+                    }
+                }
+                else {
+                    script.onSqueezeStart(event);
+                }
+            }
+        };
+        this.callSqueezeEnd = (event) => {
+            const catchExceptions = this.catchExceptions;
+            for (const script of this.scripts) {
+                if (catchExceptions) {
+                    try {
+                        script.onSqueezeEnd(event);
+                    }
+                    catch (error) {
+                        this.handleException(error instanceof Error ? error : new Error(String(error)), script, 'onSqueezeEnd');
+                    }
+                }
+                else {
+                    script.onSqueezeEnd(event);
+                }
+            }
+        };
+        this.callSqueeze = (event) => {
+            const catchExceptions = this.catchExceptions;
+            for (const script of this.scripts) {
+                if (catchExceptions) {
+                    try {
+                        script.onSqueeze(event);
+                    }
+                    catch (error) {
+                        this.handleException(error instanceof Error ? error : new Error(String(error)), script, 'onSqueeze');
+                    }
+                }
+                else {
+                    script.onSqueeze(event);
+                }
+            }
+        };
+        this.callKeyDown = (event) => {
+            const catchExceptions = this.catchExceptions;
+            for (const script of this.scripts) {
+                if (catchExceptions) {
+                    try {
+                        script.onKeyDown(event);
+                    }
+                    catch (error) {
+                        this.handleException(error instanceof Error ? error : new Error(String(error)), script, 'onKeyDown');
+                    }
+                }
+                else {
+                    script.onKeyDown(event);
+                }
+            }
+        };
+        this.callKeyUp = (event) => {
+            const catchExceptions = this.catchExceptions;
+            for (const script of this.scripts) {
+                if (catchExceptions) {
+                    try {
+                        script.onKeyUp(event);
+                    }
+                    catch (error) {
+                        this.handleException(error instanceof Error ? error : new Error(String(error)), script, 'onKeyUp');
+                    }
+                }
+                else {
+                    script.onKeyUp(event);
+                }
+            }
+        };
+        this.onXRSessionStarted = (session) => {
+            const catchExceptions = this.catchExceptions;
+            for (const script of this.scripts) {
+                if (catchExceptions) {
+                    try {
+                        script.onXRSessionStarted(session);
+                    }
+                    catch (error) {
+                        this.handleException(error instanceof Error ? error : new Error(String(error)), script, 'onXRSessionStarted');
+                    }
+                }
+                else {
+                    script.onXRSessionStarted(session);
+                }
+            }
+        };
+        this.onXRSessionEnded = () => {
+            const catchExceptions = this.catchExceptions;
+            for (const script of this.scripts) {
+                if (catchExceptions) {
+                    try {
+                        script.onXRSessionEnded();
+                    }
+                    catch (error) {
+                        this.handleException(error instanceof Error ? error : new Error(String(error)), script, 'onXRSessionEnded');
+                    }
+                }
+                else {
+                    script.onXRSessionEnded();
+                }
+            }
+        };
+        this.onSimulatorStarted = () => {
+            const catchExceptions = this.catchExceptions;
+            for (const script of this.scripts) {
+                if (catchExceptions) {
+                    try {
+                        script.onSimulatorStarted();
+                    }
+                    catch (error) {
+                        this.handleException(error instanceof Error ? error : new Error(String(error)), script, 'onSimulatorStarted');
+                    }
+                }
+                else {
+                    script.onSimulatorStarted();
+                }
+            }
+        };
+    }
+    handleException(error, script, context) {
+        console.error(`An error occurred in script ${script.name || script.constructor.name} [${context}]:`, error);
+        this.dispatchEvent({
+            type: ScriptsManagerEventType.EXCEPTION,
+            scriptName: script.name || script.constructor.name,
+            context,
+            error,
+            timestamp: performance.now(),
+        });
     }
     /**
      * Initializes a script and adds it to the set of scripts which will receive
@@ -2993,16 +3320,6 @@ class ScriptsManager {
         this.initializingScripts.delete(script);
     }
     /**
-     * Helper for scene traversal to avoid closure allocation.
-     */
-    checkScript(obj) {
-        if (obj.isXRScript) {
-            const script = obj;
-            this.syncPromises.push(this.initScript(script));
-            this.seenScripts.add(script);
-        }
-    }
-    /**
      * Finds all scripts in the scene and initializes them or uninitailizes them.
      * Returns a promise which resolves when all new scripts are finished
      * initalizing.
@@ -3011,7 +3328,7 @@ class ScriptsManager {
     syncScriptsWithScene(scene) {
         this.seenScripts.clear();
         this.syncPromises.length = 0;
-        scene.traverse(this.checkScriptBound);
+        scene.traverse(this.checkScript);
         // Delete missing scripts.
         for (const script of this.scripts) {
             if (!this.seenScripts.has(script)) {
@@ -3019,61 +3336,6 @@ class ScriptsManager {
             }
         }
         return Promise.allSettled(this.syncPromises);
-    }
-    callSelectStart(event) {
-        for (const script of this.scripts) {
-            script.onSelectStart(event);
-        }
-    }
-    callSelectEnd(event) {
-        for (const script of this.scripts) {
-            script.onSelectEnd(event);
-        }
-    }
-    callSelect(event) {
-        for (const script of this.scripts) {
-            script.onSelect(event);
-        }
-    }
-    callSqueezeStart(event) {
-        for (const script of this.scripts) {
-            script.onSqueezeStart(event);
-        }
-    }
-    callSqueezeEnd(event) {
-        for (const script of this.scripts) {
-            script.onSqueezeEnd(event);
-        }
-    }
-    callSqueeze(event) {
-        for (const script of this.scripts) {
-            script.onSqueeze(event);
-        }
-    }
-    callKeyDown(event) {
-        for (const script of this.scripts) {
-            script.onKeyDown(event);
-        }
-    }
-    callKeyUp(event) {
-        for (const script of this.scripts) {
-            script.onKeyUp(event);
-        }
-    }
-    onXRSessionStarted(session) {
-        for (const script of this.scripts) {
-            script.onXRSessionStarted(session);
-        }
-    }
-    onXRSessionEnded() {
-        for (const script of this.scripts) {
-            script.onXRSessionEnded();
-        }
-    }
-    onSimulatorStarted() {
-        for (const script of this.scripts) {
-            script.onSimulatorStarted();
-        }
     }
 }
 
@@ -3123,8 +3385,25 @@ class WebXRSessionManager extends THREE.EventDispatcher {
         this.renderer = renderer;
         this.sessionInit = sessionInit;
         this.mode = mode;
-        this.onSessionEndedBound = this.onSessionEndedInternal.bind(this);
         this.waitingForXRSession = false;
+        /** Internal callback for when a session successfully starts. */
+        this.onSessionStartedInternal = async (session) => {
+            session.addEventListener('end', this.onSessionEndedInternal);
+            await this.renderer.xr.setSession(session);
+            this.currentSession = session;
+            // Fire the 'sessionstart' event with the session in the data payload
+            this.dispatchEvent({
+                type: WebXRSessionEventType.SESSION_START,
+                session: session,
+            });
+        };
+        /** Internal callback for when the session ends. */
+        this.onSessionEndedInternal = () => {
+            // Fire the 'sessionend' event
+            this.dispatchEvent({ type: WebXRSessionEventType.SESSION_END });
+            this.currentSession?.removeEventListener('end', this.onSessionEndedInternal);
+            this.currentSession = undefined;
+        };
     }
     /**
      * Checks for WebXR support and availability of the requested session mode.
@@ -3166,7 +3445,7 @@ class WebXRSessionManager extends THREE.EventDispatcher {
             // Automatically start session if 'offerSession' is available
             if (navigator.xr.offerSession !== undefined) {
                 navigator.xr.offerSession(this.mode, this.sessionOptions)
-                    .then(this.onSessionStartedInternal.bind(this))
+                    .then(this.onSessionStartedInternal)
                     .catch((err) => {
                     console.warn(err);
                 });
@@ -3200,7 +3479,10 @@ class WebXRSessionManager extends THREE.EventDispatcher {
             .finally(() => {
             this.waitingForXRSession = false;
         })
-            .then(this.onSessionStartedInternal.bind(this));
+            .then(this.onSessionStartedInternal)
+            .catch((err) => {
+            console.error('Error requesting session', err, 'mode:', this.mode, 'sesionOptions:', this.sessionOptions);
+        });
     }
     /**
      * Ends the WebXR session.
@@ -3221,24 +3503,6 @@ class WebXRSessionManager extends THREE.EventDispatcher {
     }
     getSessionOptions() {
         return this.sessionOptions;
-    }
-    /** Internal callback for when a session successfully starts. */
-    async onSessionStartedInternal(session) {
-        session.addEventListener('end', this.onSessionEndedBound);
-        await this.renderer.xr.setSession(session);
-        this.currentSession = session;
-        // Fire the 'sessionstart' event with the session in the data payload
-        this.dispatchEvent({
-            type: WebXRSessionEventType.SESSION_START,
-            session: session,
-        });
-    }
-    /** Internal callback for when the session ends. */
-    onSessionEndedInternal( /*event*/) {
-        // Fire the 'sessionend' event
-        this.dispatchEvent({ type: WebXRSessionEventType.SESSION_END });
-        this.currentSession?.removeEventListener('end', this.onSessionEndedBound);
-        this.currentSession = undefined;
     }
 }
 
@@ -3420,8 +3684,9 @@ class XREffects {
         renderer.xr.cameraAutoUpdate = false;
         renderer.xr.enabled = false;
         const deltaTime = this.timer.getDelta();
-        if (renderer.xr.getCamera().cameras.length == 2) {
-            for (let camIndex = 0; camIndex < 2; ++camIndex) {
+        const numCameras = renderer.xr.getCamera().cameras.length;
+        if (numCameras > 0) {
+            for (let camIndex = 0; camIndex < numCameras; ++camIndex) {
                 const cam = renderer.xr.getCamera().cameras[camIndex];
                 renderer.setViewport(cam.viewport);
                 renderer.setRenderTarget(renderTargets[camIndex]);
@@ -3433,18 +3698,18 @@ class XREffects {
             renderer.clear();
             renderer.xr.isPresenting = false;
             renderer.autoClearColor = false;
-            for (let eye = 0; eye < 2; eye++) {
+            for (let eye = 0; eye < numCameras; eye++) {
                 for (let i = 0; i < this.passes.length - 1; ++i) {
                     const lastRenderTargetIndex = i % 2;
                     const nextRenderTargetIndex = (i + 1) % 2;
-                    defaultTarget.viewport.set((eye * this.dimensions.x) / 2, 0, this.dimensions.x / 2, this.dimensions.y);
+                    defaultTarget.viewport.set((eye * this.dimensions.x) / numCameras, 0, this.dimensions.x / numCameras, this.dimensions.y);
                     this.passes[i].render(renderer, this.renderTargets[2 * nextRenderTargetIndex + eye], this.renderTargets[2 * lastRenderTargetIndex + eye], deltaTime, 
                     /*maskActive=*/ false, 
                     /*viewId=*/ eye);
                 }
                 if (this.passes.length > 0) {
                     const lastRenderTargetIndex = (this.passes.length - 1) % 2;
-                    defaultTarget.viewport.set((eye * this.dimensions.x) / 2, 0, this.dimensions.x / 2, this.dimensions.y);
+                    defaultTarget.viewport.set((eye * this.dimensions.x) / numCameras, 0, this.dimensions.x / numCameras, this.dimensions.y);
                     this.passes[this.passes.length - 1].render(renderer, defaultTarget, this.renderTargets[2 * lastRenderTargetIndex + eye], deltaTime, 
                     /*maskActive=*/ false, 
                     /*viewId=*/ eye);
@@ -3525,6 +3790,7 @@ uniform float uDebug;
 uniform float uOpacity;
 uniform bool uUsingFloatDepth;
 uniform bool uIsTextureArray;
+uniform mat4 uNormDepthBufferFromNormView;
 
 float saturate(in float x) {
   return clamp(x, 0.0, 1.0);
@@ -3595,13 +3861,13 @@ void main() {
     return;
   }
 
-  vec2 depth_uv = uv;
-  depth_uv.y = 1.0 - depth_uv.y;
+  vec2 view_uv = vec2(uv.x, 1.0 - uv.y);
+  vec2 depth_uv = (uNormDepthBufferFromNormView * vec4(view_uv, 0.0, 1.0)).xy;
 
   float depth = (uIsTextureArray ? DepthArrayGetMeters(uDepthTextureArray, depth_uv) : DepthGetMeters(uDepthTexture, depth_uv)) * 8.0;
   float normalized_depth =
     saturate((depth - uMinDepth) / (uMaxDepth - uMinDepth));
-  gl_FragColor = uOpacity * vec4(TurboColormap(normalized_depth), 1.0);
+  gl_FragColor =  vec4(TurboColormap(normalized_depth), 1.0);
 }
 `,
 };
@@ -3641,13 +3907,16 @@ class DepthMesh extends MeshScript {
                 uOpacity: { value: options.opacity },
                 uDebug: { value: options.showDebugTexture ? 1.0 : 0.0 },
                 uLightDirection: { value: new THREE.Vector3(1.0, 1.0, 1.0).normalize() },
-                uUsingFloatDepth: { value: depthOptions.useFloat32 },
+                uUsingFloatDepth: {
+                    value: depthOptions.dataFormatPreference[0] === 'float32',
+                },
+                uNormDepthBufferFromNormView: { value: new THREE.Matrix4() },
             };
             material = new THREE.ShaderMaterial({
                 uniforms: uniforms,
                 vertexShader: DepthMeshTexturedShader.vertexShader,
                 fragmentShader: DepthMeshTexturedShader.fragmentShader,
-                side: THREE.FrontSide,
+                side: THREE.DoubleSide,
                 transparent: true,
             });
         }
@@ -3702,21 +3971,29 @@ class DepthMesh extends MeshScript {
      * Updates the depth data and geometry positions based on the provided camera
      * and depth data.
      */
-    updateDepth(depthData, projectionMatrixInverse) {
+    updateDepth(depthData, projectionMatrixInverse, depthDataFormat) {
         this.projectionMatrixInverse = projectionMatrixInverse;
         this.minDepth = 8;
         this.maxDepth = 0;
         if (this.options.updateFullResolutionGeometry) {
-            this.updateFullResolutionGeometry(depthData);
+            this.updateFullResolutionGeometry(depthData, depthDataFormat);
         }
         if (this.downsampledGeometry) {
-            this.updateGeometry(depthData, this.downsampledGeometry);
+            this.updateGeometry(depthData, this.downsampledGeometry, depthDataFormat);
         }
         this.minDepthPrev = this.minDepth;
         this.maxDepthPrev = this.maxDepth;
         this.geometry.attributes.position.needsUpdate = true;
         const depthTextureLeft = this.depthTextures?.get(0);
         if (depthTextureLeft && this.depthTextureMaterialUniforms) {
+            this.depthTextureMaterialUniforms.uUsingFloatDepth.value =
+                depthDataFormat === 'float32';
+            if (depthData.normDepthBufferFromNormView) {
+                this.depthTextureMaterialUniforms.uNormDepthBufferFromNormView.value.fromArray(depthData.normDepthBufferFromNormView.matrix);
+            }
+            else {
+                this.depthTextureMaterialUniforms.uNormDepthBufferFromNormView.value.identity();
+            }
             const isTextureArray = depthTextureLeft instanceof THREE.ExternalTexture;
             this.depthTextureMaterialUniforms.uIsTextureArray.value = isTextureArray
                 ? 1.0
@@ -3748,100 +4025,44 @@ class DepthMesh extends MeshScript {
             this.downsampledMesh.updateMatrixWorld();
         }
     }
-    updateGPUDepth(depthData, projectionMatrixInverse) {
-        this.updateDepth(this.convertGPUToGPU(depthData), projectionMatrixInverse);
-    }
-    convertGPUToGPU(depthData) {
-        if (!this.depthTarget) {
-            this.depthTarget = new THREE.WebGLRenderTarget(depthData.width, depthData.height, {
-                format: THREE.RedFormat,
-                type: THREE.FloatType,
-                internalFormat: 'R32F',
-                minFilter: THREE.NearestFilter,
-                magFilter: THREE.NearestFilter,
-                depthBuffer: false,
-            });
-            this.depthTexture = new THREE.ExternalTexture(depthData.texture);
-            const textureProperties = this.renderer.properties.get(this.depthTexture);
-            textureProperties.__webglTexture = depthData.texture;
-            this.gpuPixels = new Float32Array(depthData.width * depthData.height);
-            const depthShader = new THREE.ShaderMaterial({
-                vertexShader: `
-                varying vec2 vUv;
-                void main() {
-                    vUv = uv;
-                    vUv.y = 1.0-vUv.y;
-                    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-                }
-            `,
-                fragmentShader: `
-                precision highp float;
-                precision highp sampler2DArray;
-
-                uniform sampler2DArray uTexture;
-                uniform float uCameraNear;
-                varying vec2 vUv;
-
-                void main() {
-                  float z = texture(uTexture, vec3(vUv, 0)).r;
-                  z = uCameraNear / (1.0 - z);
-                  z = clamp(z, 0.0, 20.0);
-                  gl_FragColor = vec4(z, 0, 0, 1.0);
-                }
-            `,
-                uniforms: {
-                    uTexture: { value: this.depthTexture },
-                    uCameraNear: {
-                        value: depthData.depthNear,
-                    },
-                },
-                blending: THREE.NoBlending,
-                depthTest: false,
-                depthWrite: false,
-                side: THREE.DoubleSide,
-            });
-            const depthMesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), depthShader);
-            this.depthScene = new THREE.Scene();
-            this.depthScene.add(depthMesh);
-            this.depthCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-        }
-        const originalRenderTarget = this.renderer.getRenderTarget();
-        this.renderer.xr.enabled = false;
-        this.renderer.setRenderTarget(this.depthTarget);
-        this.renderer.render(this.depthScene, this.depthCamera);
-        this.renderer.readRenderTargetPixels(this.depthTarget, 0, 0, depthData.width, depthData.height, this.gpuPixels, 0);
-        this.renderer.xr.enabled = true;
-        this.renderer.setRenderTarget(originalRenderTarget);
-        return {
-            width: depthData.width,
-            height: depthData.height,
-            data: this.gpuPixels.buffer,
-            rawValueToMeters: depthData.rawValueToMeters,
-        };
-    }
     /**
      * Method to manually update the full resolution geometry.
      * Only needed if options.updateFullResolutionGeometry is false.
      */
-    updateFullResolutionGeometry(depthData) {
-        this.updateGeometry(depthData, this.geometry);
+    updateFullResolutionGeometry(depthData, depthDataFormat) {
+        this.updateGeometry(depthData, this.geometry, depthDataFormat);
     }
     /**
      * Internal method to update the geometry of the depth mesh.
      */
-    updateGeometry(depthData, geometry) {
+    updateGeometry(depthData, geometry, depthDataFormat) {
         const width = depthData.width;
         const height = depthData.height;
-        const depthArray = this.depthOptions.useFloat32
+        const depthArray = depthDataFormat === 'float32'
             ? new Float32Array(depthData.data)
             : new Uint16Array(depthData.data);
         const vertexPosition = new THREE.Vector3();
+        const normViewCoord = new THREE.Vector3();
+        const normDepthBufferFromNormView = depthData.normDepthBufferFromNormView
+            ? new THREE.Matrix4().fromArray(depthData.normDepthBufferFromNormView.matrix)
+            : new THREE.Matrix4().identity();
         for (let i = 0; i < geometry.attributes.position.count; ++i) {
             const u = geometry.attributes.uv.array[2 * i];
             const v = geometry.attributes.uv.array[2 * i + 1];
+            let sampleU = u;
+            let sampleV = v;
+            if (depthData.normDepthBufferFromNormView) {
+                normViewCoord.set(u, 1.0 - v, 0);
+                normViewCoord.applyMatrix4(normDepthBufferFromNormView);
+                sampleU = normViewCoord.x;
+                sampleV = normViewCoord.y;
+            }
+            else {
+                sampleV = 1.0 - v;
+            }
             // Grabs the nearest for now.
-            const depthX = Math.round(clamp(u * (width - 1), 0, width - 1));
-            const depthY = Math.round(clamp((1.0 - v) * (height - 1), 0, height - 1));
+            const depthX = Math.round(clamp$1(sampleU * (width - 1), 0, width - 1));
+            const depthY = Math.round(clamp$1(sampleV * (height - 1), 0, height - 1));
             const rawDepth = depthArray[depthY * width + depthX];
             let depth = depthData.rawValueToMeters * rawDepth;
             // Finds global min/max.
@@ -3983,6 +4204,8 @@ class DepthMeshOptions {
         // Whether to always update the full resolution geometry.
         this.updateFullResolutionGeometry = false;
         this.colliderUpdateFps = 5;
+        /** FPS cap for depth mesh geometry updates. 0 = update every frame. */
+        this.depthMeshUpdateFps = 0;
         this.depthFullResolution = 160;
         this.ignoreEdgePixels = 3;
     }
@@ -4000,7 +4223,8 @@ class DepthOptions {
         };
         // Occlusion pass.
         this.occlusion = { enabled: false };
-        this.useFloat32 = true;
+        this.usagePreference = [];
+        this.dataFormatPreference = ['float32', 'luminance-alpha'];
         this.depthTypeRequest = ['raw'];
         this.matchDepthView = true;
         deepMerge(this, options);
@@ -4076,11 +4300,11 @@ class DepthTextures {
         this.nativeTextures = [];
         this.depthData = [];
     }
-    createDataDepthTextures(depthData, viewId) {
+    createDataDepthTextures(depthData, viewId, depthDataFormat) {
         if (this.dataTextures[viewId]) {
             this.dataTextures[viewId].dispose();
         }
-        if (this.options.useFloat32) {
+        if (depthDataFormat === 'float32') {
             const typedArray = new Float32Array(depthData.width * depthData.height);
             const format = THREE.RedFormat;
             const type = THREE.FloatType;
@@ -4095,13 +4319,13 @@ class DepthTextures {
             this.dataTextures[viewId] = new THREE.DataTexture(typedArray, depthData.width, depthData.height, format, type);
         }
     }
-    updateData(depthData, viewId) {
+    updateData(depthData, viewId, depthDataFormat) {
         if (this.dataTextures.length < viewId + 1 ||
             this.dataTextures[viewId].image.width !== depthData.width ||
             this.dataTextures[viewId].image.height !== depthData.height) {
-            this.createDataDepthTextures(depthData, viewId);
+            this.createDataDepthTextures(depthData, viewId, depthDataFormat);
         }
-        if (this.options.useFloat32) {
+        if (depthDataFormat === 'float32') {
             this.float32Arrays[viewId].set(new Float32Array(depthData.data));
         }
         else {
@@ -4111,7 +4335,7 @@ class DepthTextures {
         this.depthData[viewId] = depthData;
     }
     updateNativeTexture(depthData, renderer, viewId) {
-        if (this.dataTextures.length < viewId + 1) {
+        if (this.nativeTextures.length < viewId + 1) {
             this.nativeTextures[viewId] = new THREE.ExternalTexture(depthData.texture);
         }
         else {
@@ -4127,6 +4351,83 @@ class DepthTextures {
             return this.dataTextures[viewId];
         }
         return this.nativeTextures[viewId];
+    }
+}
+
+class GPUDepthConverter {
+    constructor(renderer) {
+        this.renderer = renderer;
+    }
+    /**
+     * Converts unsigned short GPU depth from Quest 3 to float32 CPU depth.
+     */
+    convertGPUToCPU(depthData) {
+        if (!this.depthTarget) {
+            this.depthTarget = new THREE.WebGLRenderTarget(depthData.width, depthData.height, {
+                format: THREE.RedFormat,
+                type: THREE.FloatType,
+                internalFormat: 'R32F',
+                minFilter: THREE.NearestFilter,
+                magFilter: THREE.NearestFilter,
+                depthBuffer: false,
+            });
+            this.depthTexture = new THREE.ExternalTexture(depthData.texture);
+            const textureProperties = this.renderer.properties.get(this.depthTexture);
+            textureProperties.__webglTexture = depthData.texture;
+            this.gpuPixels = new Float32Array(depthData.width * depthData.height);
+            const depthShader = new THREE.ShaderMaterial({
+                vertexShader: `
+                varying vec2 vUv;
+                void main() {
+                    vUv = uv;
+                    vUv.y = 1.0-vUv.y;
+                    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                }
+            `,
+                fragmentShader: `
+                precision highp float;
+                precision highp sampler2DArray;
+
+                uniform sampler2DArray uTexture;
+                uniform float uCameraNear;
+                varying vec2 vUv;
+
+                void main() {
+                  float z = texture(uTexture, vec3(vUv, 0)).r;
+                  z = uCameraNear / (1.0 - z);
+                  z = clamp(z, 0.0, 20.0);
+                  gl_FragColor = vec4(z, 0, 0, 1.0);
+                }
+            `,
+                uniforms: {
+                    uTexture: { value: this.depthTexture },
+                    uCameraNear: {
+                        value: depthData.depthNear,
+                    },
+                },
+                blending: THREE.NoBlending,
+                depthTest: false,
+                depthWrite: false,
+                side: THREE.DoubleSide,
+            });
+            const depthMesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), depthShader);
+            this.depthScene = new THREE.Scene();
+            this.depthScene.add(depthMesh);
+            this.depthCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+        }
+        const originalRenderTarget = this.renderer.getRenderTarget();
+        this.renderer.xr.enabled = false;
+        this.renderer.setRenderTarget(this.depthTarget);
+        this.renderer.render(this.depthScene, this.depthCamera);
+        this.renderer.readRenderTargetPixels(this.depthTarget, 0, 0, depthData.width, depthData.height, this.gpuPixels, 0);
+        this.renderer.xr.enabled = true;
+        this.renderer.setRenderTarget(originalRenderTarget);
+        return {
+            width: depthData.width,
+            height: depthData.height,
+            data: this.gpuPixels.buffer,
+            rawValueToMeters: depthData.rawValueToMeters,
+        };
     }
 }
 
@@ -4619,6 +4920,7 @@ class OcclusionPass extends Pass {
 const DEFAULT_DEPTH_WIDTH = 160;
 const DEFAULT_DEPTH_HEIGHT = DEFAULT_DEPTH_WIDTH;
 const clipSpacePosition = new THREE.Vector3();
+const normViewCoord = new THREE.Vector3();
 class Depth {
     get rawValueToMeters() {
         if (this.cpuDepthData.length) {
@@ -4652,6 +4954,13 @@ class Depth {
         this.depthViewProjectionMatrices = [];
         this.depthCameraPositions = [];
         this.depthCameraRotations = [];
+        /**
+         * Transforms from normalized view coordinates to normalized depth buffer
+         * coordinates. Identity when matchDepthView is true.
+         */
+        this.normDepthBufferFromNormViewMatrices = [];
+        /** Timestamp of the last depth mesh geometry update. */
+        this.lastDepthMeshUpdateTime = 0;
         if (Depth.instance) {
             return Depth.instance;
         }
@@ -4665,6 +4974,7 @@ class Depth {
         this.options = options;
         this.renderer = renderer;
         this.enabled = options.enabled;
+        this.gpuDepthConverter = new GPUDepthConverter(renderer);
         if (this.options.depthTexture.enabled) {
             this.depthTextures = new DepthTextures(options);
             registry.register(this.depthTextures);
@@ -4684,6 +4994,7 @@ class Depth {
     }
     /**
      * Retrieves the depth at normalized coordinates (u, v).
+     * Note: The UV coordinates are with respect to the user's view, not the depth camera view.
      * @param u - Normalized horizontal coordinate.
      * @param v - Normalized vertical coordinate.
      * @returns Depth value at the specified coordinates.
@@ -4691,8 +5002,16 @@ class Depth {
     getDepth(u, v) {
         if (!this.depthArray[0])
             return 0.0;
-        const depthX = Math.round(clamp(u * this.width, 0, this.width - 1));
-        const depthY = Math.round(clamp((1.0 - v) * this.height, 0, this.height - 1));
+        // When matchDepthView is false, transform from view-space UVs to
+        // depth buffer UVs using normDepthBufferFromNormView.
+        if (this.normDepthBufferFromNormViewMatrices.length > 0) {
+            normViewCoord.set(u, v, 0);
+            normViewCoord.applyMatrix4(this.normDepthBufferFromNormViewMatrices[0]);
+            u = normViewCoord.x;
+            v = normViewCoord.y;
+        }
+        const depthX = Math.round(clamp$1(u * this.width, 0, this.width - 1));
+        const depthY = Math.round(clamp$1((1.0 - v) * this.height, 0, this.height - 1));
         const rawDepth = this.depthArray[0][depthY * this.width + depthX];
         return this.rawValueToMeters * rawDepth;
     }
@@ -4709,7 +5028,13 @@ class Depth {
             .applyMatrix4(this.depthProjectionMatrices[0]);
         const u = 0.5 * (clipSpacePosition.x + 1.0);
         const v = 0.5 * (clipSpacePosition.y + 1.0);
-        const depth = this.getDepth(u, v);
+        let depth = 0.0;
+        if (this.depthArray[0]) {
+            const depthX = Math.round(clamp$1(u * this.width, 0, this.width - 1));
+            const depthY = Math.round(clamp$1((1.0 - v) * this.height, 0, this.height - 1));
+            const rawDepth = this.depthArray[0][depthY * this.width + depthX];
+            depth = this.rawValueToMeters * rawDepth;
+        }
         target.set(2.0 * (u - 0.5), 2.0 * (v - 0.5), -1);
         target.applyMatrix4(this.depthProjectionInverseMatrices[0]);
         target.multiplyScalar(-depth / target.z);
@@ -4717,6 +5042,7 @@ class Depth {
     }
     /**
      * Retrieves the depth at normalized coordinates (u, v).
+     * Note: The UV coordinates are with respect to the user's view, not the depth camera view.
      * @param u - Normalized horizontal coordinate.
      * @param v - Normalized vertical coordinate.
      * @returns Vertex at (u, v)
@@ -4724,8 +5050,16 @@ class Depth {
     getVertex(u, v) {
         if (!this.depthArray[0])
             return null;
-        const depthX = Math.round(clamp(u * this.width, 0, this.width - 1));
-        const depthY = Math.round(clamp((1.0 - v) * this.height, 0, this.height - 1));
+        // When matchDepthView is false, transform from view-space UVs to
+        // depth buffer UVs using normDepthBufferFromNormView.
+        if (this.normDepthBufferFromNormViewMatrices.length > 0) {
+            normViewCoord.set(u, v, 0);
+            normViewCoord.applyMatrix4(this.normDepthBufferFromNormViewMatrices[0]);
+            u = normViewCoord.x;
+            v = normViewCoord.y;
+        }
+        const depthX = Math.round(clamp$1(u * this.width, 0, this.width - 1));
+        const depthY = Math.round(clamp$1((1.0 - v) * this.height, 0, this.height - 1));
         const rawDepth = this.depthArray[0][depthY * this.width + depthX];
         const depth = this.rawValueToMeters * rawDepth;
         const vertexPosition = new THREE.Vector3(2.0 * (u - 0.5), 2.0 * (v - 0.5), -1);
@@ -4742,6 +5076,14 @@ class Depth {
             this.depthProjectionInverseMatrices.push(new THREE.Matrix4());
             this.depthCameraPositions.push(new THREE.Vector3());
             this.depthCameraRotations.push(new THREE.Quaternion());
+            this.normDepthBufferFromNormViewMatrices.push(new THREE.Matrix4());
+        }
+        // Store the view-to-depth-buffer coordinate transform.
+        if (depthData.normDepthBufferFromNormView) {
+            this.normDepthBufferFromNormViewMatrices[viewId].fromArray(depthData.normDepthBufferFromNormView.matrix);
+        }
+        else {
+            this.normDepthBufferFromNormViewMatrices[viewId].identity();
         }
         if (depthData.projectionMatrix && depthData.transform) {
             this.depthProjectionMatrices[viewId].fromArray(depthData.projectionMatrix);
@@ -4761,61 +5103,78 @@ class Depth {
             .invert();
         this.depthViewProjectionMatrices[viewId].multiplyMatrices(this.depthProjectionMatrices[viewId], this.depthViewMatrices[viewId]);
     }
-    updateCPUDepthData(depthData, viewId = 0) {
+    updateCPUDepthData(depthData, viewId, depthDataFormat) {
         this.cpuDepthData[viewId] = depthData;
+        this.depthDataFormat = depthDataFormat;
         this.updateDepthMatrices(depthData, viewId);
         // Updates Depth Array.
-        this.depthArray[viewId] = this.options.useFloat32
-            ? new Float32Array(depthData.data)
-            : new Uint16Array(depthData.data);
+        this.depthArray[viewId] =
+            depthDataFormat === 'float32'
+                ? new Float32Array(depthData.data)
+                : new Uint16Array(depthData.data);
         this.width = depthData.width;
         this.height = depthData.height;
         // Updates Depth Texture.
         if (this.options.depthTexture.enabled && this.depthTextures) {
-            this.depthTextures.updateData(depthData, viewId);
+            this.depthTextures.updateData(depthData, viewId, depthDataFormat);
         }
         if (this.options.depthMesh.enabled && this.depthMesh && viewId == 0) {
-            this.depthMesh.updateDepth(depthData, this.depthProjectionInverseMatrices[0]);
+            if (this.shouldUpdateDepthMesh()) {
+                this.depthMesh.updateDepth(depthData, this.depthProjectionInverseMatrices[0], depthDataFormat);
+            }
             this.depthMesh.updatePose(this.depthCameraPositions[0], this.depthCameraRotations[0]);
         }
     }
-    updateGPUDepthData(depthData, viewId = 0) {
+    updateGPUDepthData(depthData, viewId) {
         this.gpuDepthData[viewId] = depthData;
         this.updateDepthMatrices(depthData, viewId);
         // For now, assume that we need cpu depth only if depth mesh is enabled.
         // In the future, add a separate option.
         const needCpuDepth = this.options.depthMesh.enabled;
-        const cpuDepth = needCpuDepth && this.depthMesh
-            ? this.depthMesh.convertGPUToGPU(depthData)
+        const cpuDepth = needCpuDepth && this.gpuDepthConverter
+            ? this.gpuDepthConverter.convertGPUToCPU(depthData)
             : null;
         if (cpuDepth) {
-            if (this.depthArray[viewId] == null) {
-                this.depthArray[viewId] = this.options.useFloat32
-                    ? new Float32Array(cpuDepth.data)
-                    : new Uint16Array(cpuDepth.data);
-                this.width = cpuDepth.width;
-                this.height = cpuDepth.height;
+            this.cpuDepthData[viewId] = cpuDepth;
+            this.depthDataFormat = 'float32';
+            if (this.depthArray[viewId] instanceof Float32Array) {
+                this.depthArray[viewId].set(new Float32Array(cpuDepth.data));
             }
             else {
-                // Copies the data from an ArrayBuffer to the existing TypedArray.
-                this.depthArray[viewId].set(this.options.useFloat32
-                    ? new Float32Array(cpuDepth.data)
-                    : new Uint16Array(cpuDepth.data));
+                this.depthArray[viewId] = new Float32Array(cpuDepth.data);
             }
+            this.width = cpuDepth.width;
+            this.height = cpuDepth.height;
         }
         // Updates Depth Texture.
         if (this.options.depthTexture.enabled && this.depthTextures) {
             this.depthTextures.updateNativeTexture(depthData, this.renderer, viewId);
         }
         if (this.options.depthMesh.enabled && this.depthMesh && viewId == 0) {
-            if (cpuDepth) {
-                this.depthMesh.updateDepth(cpuDepth, this.depthProjectionInverseMatrices[0]);
-            }
-            else {
-                this.depthMesh.updateGPUDepth(depthData, this.depthProjectionInverseMatrices[0]);
+            if (this.shouldUpdateDepthMesh()) {
+                if (cpuDepth) {
+                    this.depthMesh.updateDepth(cpuDepth, this.depthProjectionInverseMatrices[0], 'float32');
+                }
             }
             this.depthMesh.updatePose(this.depthCameraPositions[0], this.depthCameraRotations[0]);
         }
+    }
+    /**
+     * Checks whether the depth mesh geometry should be updated this frame,
+     * based on the configured depthMeshUpdateFps. The pose is always updated
+     * every frame so the mesh tracks the depth camera smoothly, but the
+     * expensive geometry rebuild can be throttled.
+     */
+    shouldUpdateDepthMesh() {
+        const fps = this.options.depthMesh.depthMeshUpdateFps;
+        if (fps <= 0)
+            return true;
+        const now = performance.now();
+        if (now - this.lastDepthMeshUpdateTime < 1000 / fps) {
+            return false;
+        }
+        this.lastDepthMeshUpdateTime = now;
+        return true;
     }
     getTexture(viewId) {
         if (!this.options.depthTexture.enabled)
@@ -4868,7 +5227,7 @@ class Depth {
                         if (!depthData) {
                             return;
                         }
-                        this.updateCPUDepthData(depthData, viewId);
+                        this.updateCPUDepthData(depthData, viewId, session.depthDataFormat ?? 'luminance-alpha');
                     }
                 }
             }
@@ -4912,6 +5271,16 @@ class Depth {
     pauseDepth(client) {
         this.depthClientsInitialized = true;
         this.depthClients.delete(client);
+    }
+    /**
+     * Manually updates the depth mesh geometry using the cached depth.
+     */
+    updateFullResolutionDepthMesh() {
+        if (this.depthMesh &&
+            this.cpuDepthData.length > 0 &&
+            this.depthDataFormat) {
+            this.depthMesh.updateFullResolutionGeometry(this.cpuDepthData[0], this.depthDataFormat);
+        }
     }
 }
 
@@ -5371,6 +5740,262 @@ class ControllerRayVisual extends THREE.Line {
     raycast() { }
 }
 
+const STORAGE_KEY = 'xrblocks:simulator:gamepad-bindings:v1';
+const DEFAULT_BINDINGS = {
+    select: 0, // A / Cross
+    cycleHandPoseLeft: 14, // D-pad left
+    cycleHandPoseRight: 15, // D-pad right
+    cycleSimulatorMode: 3, // Y
+    toggleUI: 5, // RB / R1
+    toggleHand: 4, // LB / L1
+    moveUp: 6, // LT (analog) — matches keyboard Q
+    moveDown: 7, // RT (analog) — matches keyboard E
+    openSettings: 9, // Start / Menu
+};
+/**
+ * Manages gamepad button-to-action mappings with localStorage persistence.
+ * One button per action — assigning a button removes it from any previous action.
+ */
+class GamepadBindings {
+    constructor() {
+        this.bindings = { ...DEFAULT_BINDINGS };
+        this.load();
+    }
+    getBinding(action) {
+        return this.bindings[action];
+    }
+    getAllBindings() {
+        return { ...this.bindings };
+    }
+    setBinding(action, buttonIndex) {
+        // openSettings must always be bound so users can never lock themselves
+        // out of the menu — silently ignore attempts to rebind or unbind it,
+        // and refuse to assign its button to any other action.
+        if (action === 'openSettings')
+            return;
+        if (buttonIndex === this.bindings.openSettings)
+            return;
+        // Auto-unbind any other action using this button, except openSettings
+        // (same lock-out reason).
+        for (const key of Object.keys(this.bindings)) {
+            if (key !== action &&
+                key !== 'openSettings' &&
+                this.bindings[key] === buttonIndex) {
+                this.bindings[key] = -1;
+            }
+        }
+        this.bindings[action] = buttonIndex;
+        this.save();
+    }
+    resetDefaults() {
+        this.bindings = { ...DEFAULT_BINDINGS };
+        this.save();
+    }
+    load() {
+        try {
+            const raw = localStorage.getItem(STORAGE_KEY);
+            if (!raw)
+                return;
+            const parsed = JSON.parse(raw);
+            if (parsed?.version !== 1 || typeof parsed.bindings !== 'object')
+                return;
+            for (const key of Object.keys(DEFAULT_BINDINGS)) {
+                if (typeof parsed.bindings[key] === 'number') {
+                    this.bindings[key] = parsed.bindings[key];
+                }
+            }
+        }
+        catch {
+            // localStorage unavailable or corrupted — keep defaults.
+        }
+    }
+    save() {
+        try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify({ version: 1, bindings: this.bindings }));
+        }
+        catch {
+            // localStorage unavailable — silently continue.
+        }
+    }
+}
+
+const DEADZONE = 0.15;
+/**
+ * Simulates an XR controller using a connected gamepad (Xbox/PS).
+ * The controller ray always points forward from the camera center,
+ * similar to GazeController but with button-driven selection.
+ */
+class GamepadController extends Script {
+    static { this.dependencies = {
+        camera: THREE.Camera,
+    }; }
+    constructor() {
+        super();
+        this.type = 'GamepadController';
+        this.name = 'Gamepad Controller';
+        this.userData = { id: 4, connected: false, selected: false };
+        this.bindings = new GamepadBindings();
+        /** True if the toast has been shown this session. */
+        this.hasShownToast = false;
+        /** When true, normal gamepad UI/select actions are suppressed (modal menu). */
+        this.menuActive = false;
+        this._prevButtons = [];
+        this._risingEdges = [];
+        this._captureCallback = null;
+    }
+    init({ camera }) {
+        this.camera = camera;
+    }
+    /**
+     * Enters capture mode — the next button press will invoke the callback
+     * instead of triggering normal actions, then exit capture mode.
+     */
+    captureNextButtonPress(callback) {
+        this._captureCallback = callback;
+    }
+    cancelCapture() {
+        this._captureCallback = null;
+    }
+    get captureActive() {
+        return this._captureCallback !== null;
+    }
+    update() {
+        super.update();
+        const gp = this._pollGamepad();
+        if (gp && !this.userData.connected) {
+            this.activeGamepad = gp;
+            this.gamepad = gp;
+            this.dispatchEvent({ type: 'connected', target: this });
+        }
+        else if (!gp && this.userData.connected) {
+            this._onDisconnect();
+            return;
+        }
+        if (!gp || !this.userData.connected)
+            return;
+        this.activeGamepad = gp;
+        // Compute rising edges for this frame (before any consumption).
+        for (let i = 0; i < gp.buttons.length; i++) {
+            const down = gp.buttons[i]?.pressed ?? false;
+            const wasDown = this._prevButtons[i] ?? false;
+            this._risingEdges[i] = down && !wasDown;
+        }
+        // Sync pose with camera (center-screen ray, like GazeController).
+        this.position.copy(this.camera.position);
+        this.quaternion.copy(this.camera.quaternion);
+        this.updateMatrixWorld();
+        // Check for capture mode on any rising edge.
+        if (this._captureCallback) {
+            for (let i = 0; i < gp.buttons.length; i++) {
+                if (this._risingEdges[i]) {
+                    const cb = this._captureCallback;
+                    this._captureCallback = null;
+                    cb(i);
+                    this._updatePrevButtons(gp);
+                    return; // Consume all input this frame.
+                }
+            }
+        }
+        // Normal select handling via bindings (suppressed when a modal menu is
+        // active so A-button activates UI rather than firing scene selects).
+        if (!this.menuActive) {
+            const selectBtn = this.bindings.getBinding('select');
+            const selectDown = gp.buttons[selectBtn]?.pressed ?? false;
+            const selectWas = this._prevButtons[selectBtn] ?? false;
+            if (selectDown && !selectWas)
+                this.callSelectStart();
+            if (!selectDown && selectWas)
+                this.callSelectEnd();
+        }
+        this._updatePrevButtons(gp);
+    }
+    callSelectStart() {
+        this.dispatchEvent({ type: 'selectstart', target: this });
+    }
+    callSelectEnd() {
+        this.dispatchEvent({ type: 'selectend', target: this });
+    }
+    connect() {
+        this.dispatchEvent({ type: 'connected', target: this });
+    }
+    disconnect() {
+        this.dispatchEvent({ type: 'disconnected', target: this });
+    }
+    /**
+     * Returns the axes of the active gamepad with deadzone applied.
+     * [leftX, leftY, rightX, rightY]
+     */
+    getAxes() {
+        const gp = this.activeGamepad;
+        if (!gp)
+            return [0, 0, 0, 0];
+        return [
+            GamepadController.applyDeadzone(gp.axes[0] ?? 0),
+            GamepadController.applyDeadzone(gp.axes[1] ?? 0),
+            GamepadController.applyDeadzone(gp.axes[2] ?? 0),
+            GamepadController.applyDeadzone(gp.axes[3] ?? 0),
+        ];
+    }
+    static applyDeadzone(value) {
+        if (!Number.isFinite(value))
+            return 0;
+        if (Math.abs(value) < DEADZONE)
+            return 0;
+        const sign = Math.sign(value);
+        return sign * ((Math.abs(value) - DEADZONE) / (1 - DEADZONE));
+    }
+    /**
+     * Returns the analog value (0..1) of the given button index, or 0 if
+     * unbound or no gamepad. Useful for triggers (which expose .value).
+     */
+    getButtonValue(index) {
+        if (index < 0)
+            return 0;
+        return this.activeGamepad?.buttons[index]?.value ?? 0;
+    }
+    /**
+     * Returns the analog values of the left and right triggers (LT, RT) on a
+     * standard-mapped gamepad, in [0, 1]. Returns [0, 0] when no gamepad.
+     */
+    getTriggers() {
+        const gp = this.activeGamepad;
+        if (!gp)
+            return [0, 0];
+        return [gp.buttons[6]?.value ?? 0, gp.buttons[7]?.value ?? 0];
+    }
+    /**
+     * Returns true if the given button index had a rising edge this frame.
+     * Safe to call from any update order — uses pre-computed edges.
+     */
+    isButtonJustPressed(buttonIndex) {
+        return this._risingEdges[buttonIndex] ?? false;
+    }
+    _updatePrevButtons(gp) {
+        for (let i = 0; i < gp.buttons.length; i++) {
+            this._prevButtons[i] = gp.buttons[i]?.pressed ?? false;
+        }
+    }
+    _pollGamepad() {
+        const gamepads = navigator.getGamepads?.();
+        if (!gamepads)
+            return null;
+        for (const pad of gamepads) {
+            if (pad && pad.connected && pad.mapping === 'standard')
+                return pad;
+        }
+        return null;
+    }
+    _onDisconnect() {
+        if (this.userData.selected) {
+            this.callSelectEnd();
+        }
+        this._prevButtons = [];
+        this._captureCallback = null;
+        this.activeGamepad = null;
+        this.dispatchEvent({ type: 'disconnected', target: this });
+    }
+}
+
 /**
  * A simple utility class for linearly animating a numeric value over
  * time. It clamps the value within a specified min/max range and updates it
@@ -5389,7 +6014,7 @@ class AnimatableNumber {
      * seconds.
      */
     update(deltaTimeSeconds) {
-        this.value = clamp(this.value + deltaTimeSeconds * this.speed, this.minValue, this.maxValue);
+        this.value = clamp$1(this.value + deltaTimeSeconds * this.speed, this.minValue, this.maxValue);
     }
 }
 
@@ -5433,15 +6058,11 @@ class GazeController extends Script {
          * speed.
          */
         this.lastReticlePosition = new THREE.Vector3();
-        /**
-         * A clock to measure the time delta between frames for smooth animation and
-         * movement calculation.
-         */
-        this.clock = new THREE.Clock();
     }
-    static { this.dependencies = { camera: THREE.Camera }; }
-    init({ camera }) {
+    static { this.dependencies = { camera: THREE.Camera, timer: THREE.Timer }; }
+    init({ camera, timer }) {
         this.camera = camera;
+        this.timer = timer;
     }
     /**
      * The main update loop, called every frame by the core engine.
@@ -5453,7 +6074,7 @@ class GazeController extends Script {
         this.position.copy(this.camera.position);
         this.quaternion.copy(this.camera.quaternion);
         this.updateMatrixWorld();
-        const delta = this.clock.getDelta();
+        const delta = this.timer.getDelta();
         this.activationAmount.update(delta);
         const movement = this.lastReticlePosition.distanceTo(this.reticle.position) / delta;
         if (movement > PRESS_MOVEMENT_THRESHOLD) {
@@ -5631,6 +6252,7 @@ class Input {
         this.pivotsEnabled = false;
         this.gazeController = new GazeController();
         this.mouseController = new MouseController();
+        this.gamepadController = new GamepadController();
         this.controllersEnabled = true;
         this.listeners = new Map();
         this.intersectionsForController = new Map();
@@ -5657,6 +6279,8 @@ class Input {
         controllers.push(this.gazeController);
         controllers.push(this.mouseController);
         this.activeControllers.add(this.mouseController);
+        controllers.push(this.gamepadController);
+        this.activeControllers.add(this.gamepadController);
         for (const controller of controllers) {
             this.intersectionsForController.set(controller, []);
         }
@@ -5987,7 +6611,17 @@ class Input {
             return true;
         });
         if (!intersection) {
-            reticle.visible = false;
+            const fallback = this.options.reticles.defaultDistance;
+            if (fallback > 0) {
+                reticle.visible = true;
+                reticle.position
+                    .copy(this.raycaster.ray.origin)
+                    .addScaledVector(this.raycaster.ray.direction, fallback);
+                reticle.quaternion.identity();
+            }
+            else {
+                reticle.visible = false;
+            }
             return;
         }
         reticle.visible = true;
@@ -6681,60 +7315,6 @@ class User extends Script {
     }
 }
 
-class GestureRecognitionOptions {
-    constructor(options) {
-        /** Master switch for the gesture recognition block. */
-        this.enabled = false;
-        /**
-         * Backing provider that extracts gesture information.
-         *  - 'heuristics': WebXR joint heuristics only (no external ML dependency).
-         *  - 'mediapipe': MediaPipe Hands running via Web APIs / wasm.
-         *  - 'tfjs': TensorFlow.js hand-pose-detection models.
-         */
-        this.provider = 'heuristics';
-        /**
-         * Minimum confidence score to emit gesture events. Different providers map to
-         * different score domains so this value is normalised to [0-1].
-         */
-        this.minimumConfidence = 0.6;
-        /**
-         * Optional throttle window for expensive providers.
-         */
-        this.updateIntervalMs = 33;
-        /**
-         * Default gesture catalogue.
-         */
-        this.gestures = {
-            pinch: { enabled: true, threshold: 0.025 },
-            'open-palm': { enabled: true },
-            fist: { enabled: true },
-            'thumbs-up': { enabled: true },
-            point: { enabled: false },
-            spread: { enabled: false, threshold: 0.04 },
-        };
-        deepMerge(this, options);
-        if (options?.gestures) {
-            for (const [name, config] of Object.entries(options.gestures)) {
-                const gestureName = name;
-                this.gestures[gestureName] = deepMerge({ ...this.gestures[gestureName] }, config);
-            }
-        }
-    }
-    enable() {
-        this.enabled = true;
-        return this;
-    }
-    /**
-     * Convenience helper to toggle specific gestures.
-     */
-    setGestureEnabled(name, enabled) {
-        this.gestures[name] ??= { enabled };
-        this.gestures[name].enabled = enabled;
-        return this;
-    }
-}
-
-const EPSILON = 1e-6;
 const FINGER_ORDER = ['index', 'middle', 'ring', 'pinky'];
 const FINGER_PREFIX = {
     index: 'index-finger',
@@ -6742,279 +7322,56 @@ const FINGER_PREFIX = {
     ring: 'ring-finger',
     pinky: 'pinky-finger',
 };
-const heuristicDetectors = {
-    pinch: computePinch,
-    'open-palm': computeOpenPalm,
-    fist: computeFist,
-    'thumbs-up': computeThumbsUp,
-    point: computePoint,
-    spread: computeSpread,
+const DIGIT_JOINTS = {
+    thumb: [
+        'thumb-metacarpal',
+        'thumb-phalanx-proximal',
+        'thumb-phalanx-distal',
+        'thumb-tip',
+    ],
+    index: [
+        'index-finger-metacarpal',
+        'index-finger-phalanx-proximal',
+        'index-finger-phalanx-intermediate',
+        'index-finger-phalanx-distal',
+        'index-finger-tip',
+    ],
+    middle: [
+        'middle-finger-metacarpal',
+        'middle-finger-phalanx-proximal',
+        'middle-finger-phalanx-intermediate',
+        'middle-finger-phalanx-distal',
+        'middle-finger-tip',
+    ],
+    ring: [
+        'ring-finger-metacarpal',
+        'ring-finger-phalanx-proximal',
+        'ring-finger-phalanx-intermediate',
+        'ring-finger-phalanx-distal',
+        'ring-finger-tip',
+    ],
+    pinky: [
+        'pinky-finger-metacarpal',
+        'pinky-finger-phalanx-proximal',
+        'pinky-finger-phalanx-intermediate',
+        'pinky-finger-phalanx-distal',
+        'pinky-finger-tip',
+    ],
 };
-function computePinch(context, config) {
-    const thumb = getJoint(context, 'thumb-tip');
-    const index = getJoint(context, 'index-finger-tip');
-    if (!thumb || !index)
-        return undefined;
-    const supportMetrics = ['middle', 'ring', 'pinky']
-        .map((finger) => computeFingerMetric(context, finger))
-        .filter(Boolean);
-    const supportCurl = supportMetrics.length > 0
-        ? average(supportMetrics.map((metrics) => metrics.curlRatio))
-        : 1;
-    const supportPenalty = clamp01((supportCurl - 1.05) / 0.35);
-    const handScale = estimateHandScale(context);
-    const threshold = config.threshold ?? Math.max(0.018, handScale * 0.35);
-    const distance = thumb.distanceTo(index);
-    if (!Number.isFinite(distance) || distance < EPSILON) {
-        return { confidence: 0 };
-    }
-    const tightness = clamp01(1 - distance / (threshold * 0.85));
-    const loosePenalty = clamp01(1 - distance / (threshold * 1.4));
-    let confidence = clamp01(distance <= threshold ? tightness : loosePenalty * 0.4);
-    confidence *= 1 - supportPenalty * 0.45;
-    confidence = clamp01(confidence);
-    return {
-        confidence,
-        data: { distance, threshold, supportPenalty },
-    };
-}
-function computeOpenPalm(context, config) {
-    const fingerMetrics = getFingerMetrics(context);
-    if (!fingerMetrics.length)
-        return undefined;
-    const handScale = estimateHandScale(context);
-    const palmWidth = getPalmWidth(context) ?? handScale * 0.85;
-    const palmUp = getPalmUp(context);
-    const extensionScores = fingerMetrics.map(({ tipDistance }) => clamp01((tipDistance - handScale * 0.5) / (handScale * 0.45)));
-    const straightnessScores = fingerMetrics.map(({ curlRatio }) => clamp01((curlRatio - 1.1) / 0.5));
-    const orientationScore = palmUp && fingerMetrics.length
-        ? average(fingerMetrics.map((metrics) => fingerAlignmentScore(context, metrics, palmUp)))
-        : 0.5;
-    const neighbors = getAdjacentFingerDistances(context);
-    const spreadScore = neighbors.average !== Infinity && palmWidth > EPSILON
-        ? clamp01((neighbors.average - palmWidth * 0.55) / (palmWidth * 0.35))
-        : 0;
-    const extensionScore = average(extensionScores);
-    const straightScore = average(straightnessScores);
-    const confidence = clamp01(extensionScore * 0.4 +
-        straightScore * 0.25 +
-        spreadScore * 0.2 +
-        orientationScore * 0.15);
-    return {
-        confidence,
-        data: {
-            extensionScore,
-            straightScore,
-            spreadScore,
-            orientationScore,
-            threshold: config.threshold,
-        },
-    };
-}
-function computeFist(context, config) {
-    const fingerMetrics = getFingerMetrics(context);
-    if (!fingerMetrics.length)
-        return undefined;
-    const handScale = estimateHandScale(context);
-    const palmWidth = getPalmWidth(context) ?? handScale * 0.85;
-    const tipAverage = average(fingerMetrics.map((metrics) => metrics.tipDistance));
-    const curlAverage = average(fingerMetrics.map((metrics) => metrics.curlRatio));
-    const neighbors = getAdjacentFingerDistances(context);
-    const clusterScore = neighbors.average !== Infinity && palmWidth > EPSILON
-        ? clamp01((palmWidth * 0.5 - neighbors.average) / (palmWidth * 0.35))
-        : 0;
-    const thumbTip = getJoint(context, 'thumb-tip');
-    const indexBase = getFingerJoint(context, 'index', 'phalanx-proximal') ??
-        getFingerJoint(context, 'index', 'metacarpal');
-    const thumbWrapScore = thumbTip && indexBase && palmWidth > EPSILON
-        ? clamp01((palmWidth * 0.55 - thumbTip.distanceTo(indexBase)) /
-            (palmWidth * 0.35))
-        : 0;
-    const tipScore = clamp01((handScale * 0.55 - tipAverage) / (handScale * 0.25));
-    const curlScore = clamp01((1.08 - curlAverage) / 0.25);
-    const confidence = clamp01(tipScore * 0.45 +
-        curlScore * 0.3 +
-        clusterScore * 0.1 +
-        thumbWrapScore * 0.15);
-    return {
-        confidence,
-        data: {
-            tipAverage,
-            curlAverage,
-            clusterScore,
-            thumbWrapScore,
-            threshold: config.threshold,
-        },
-    };
-}
-function computeThumbsUp(context, config) {
-    const thumbMetrics = getThumbMetrics(context);
-    const fingerMetrics = getFingerMetrics(context);
-    if (!thumbMetrics || fingerMetrics.length < 2)
-        return undefined;
-    const handScale = estimateHandScale(context);
-    const palmWidth = getPalmWidth(context) ?? handScale * 0.85;
-    const palmUp = getPalmUp(context);
-    const otherCurls = fingerMetrics.map((m) => m.curlRatio);
-    const curledScore = clamp01((1.05 - average(otherCurls)) / 0.25);
-    const thumbReachRatio = thumbMetrics.referenceDistance > EPSILON
-        ? thumbMetrics.tipDistance / thumbMetrics.referenceDistance
-        : 0;
-    const thumbExtendedScore = clamp01((thumbReachRatio - 1.15) / 0.5);
-    const indexTip = getJoint(context, 'index-finger-tip');
-    const thumbIndexDistance = indexTip
-        ? thumbMetrics.tip.distanceTo(indexTip)
-        : 0;
-    const separationScore = palmWidth > EPSILON
-        ? clamp01((thumbIndexDistance - palmWidth * 0.4) / (palmWidth * 0.25))
-        : 0;
-    let orientationScore = 0;
-    if (palmUp) {
-        const thumbVector = new THREE.Vector3()
-            .copy(thumbMetrics.tip)
-            .sub(thumbMetrics.metacarpal ?? thumbMetrics.tip);
-        if (thumbVector.lengthSq() > EPSILON) {
-            thumbVector.normalize();
-            const alignment = thumbVector.dot(palmUp);
-            orientationScore = clamp01((alignment - 0.35) / 0.35);
-        }
-    }
-    const confidence = clamp01(thumbExtendedScore * 0.3 +
-        curledScore * 0.35 +
-        orientationScore * 0.2 +
-        separationScore * 0.15);
-    return {
-        confidence,
-        data: {
-            thumbReachRatio,
-            curledScore,
-            orientationScore,
-            separationScore,
-            threshold: config.threshold,
-        },
-    };
-}
-function computePoint(context, config) {
-    const indexMetrics = computeFingerMetric(context, 'index');
-    if (!indexMetrics)
-        return undefined;
-    const otherMetrics = FINGER_ORDER.slice(1)
-        .map((finger) => computeFingerMetric(context, finger))
-        .filter(Boolean);
-    if (!otherMetrics.length)
-        return undefined;
-    const handScale = estimateHandScale(context);
-    const palmWidth = getPalmWidth(context) ?? handScale * 0.85;
-    const palmUp = getPalmUp(context);
-    const indexCurlScore = clamp01((indexMetrics.curlRatio - 1.2) / 0.35);
-    const indexReachScore = clamp01((indexMetrics.tipDistance - handScale * 0.6) / (handScale * 0.25));
-    const indexDirectionScore = palmUp && indexMetrics
-        ? fingerAlignmentScore(context, indexMetrics, palmUp)
-        : 0.4;
-    const othersCurl = average(otherMetrics.map((metrics) => metrics.curlRatio));
-    const othersCurledScore = clamp01((1.05 - othersCurl) / 0.25);
-    const thumbTip = getJoint(context, 'thumb-tip');
-    const thumbTuckedScore = thumbTip && indexMetrics.metacarpal && palmWidth > EPSILON
-        ? clamp01((palmWidth * 0.75 - thumbTip.distanceTo(indexMetrics.metacarpal)) /
-            (palmWidth * 0.4))
-        : 0.5;
-    const confidence = clamp01(indexCurlScore * 0.35 +
-        indexReachScore * 0.25 +
-        othersCurledScore * 0.2 +
-        indexDirectionScore * 0.1 +
-        thumbTuckedScore * 0.1);
-    return {
-        confidence,
-        data: {
-            indexCurlScore,
-            indexReachScore,
-            othersCurledScore,
-            indexDirectionScore,
-            thumbTuckedScore,
-            threshold: config.threshold,
-        },
-    };
-}
-function computeSpread(context, config) {
-    const fingerMetrics = getFingerMetrics(context);
-    if (!fingerMetrics.length)
-        return undefined;
-    const handScale = estimateHandScale(context);
-    const palmWidth = getPalmWidth(context) ?? handScale * 0.85;
-    const neighbors = getAdjacentFingerDistances(context);
-    const palmUp = getPalmUp(context);
-    const spreadScore = neighbors.average !== Infinity && palmWidth > EPSILON
-        ? clamp01((neighbors.average - palmWidth * 0.6) / (palmWidth * 0.35))
-        : 0;
-    const extensionScore = clamp01((average(fingerMetrics.map((metrics) => metrics.curlRatio)) - 1.15) / 0.45);
-    const orientationScore = palmUp && fingerMetrics.length
-        ? average(fingerMetrics.map((metrics) => fingerAlignmentScore(context, metrics, palmUp)))
-        : 0.5;
-    const confidence = clamp01(spreadScore * 0.55 + extensionScore * 0.3 + orientationScore * 0.15);
-    return {
-        confidence,
-        data: {
-            spreadScore,
-            extensionScore,
-            orientationScore,
-            threshold: config.threshold,
-        },
-    };
-}
-function computeFingerMetric(context, finger) {
-    const tip = getFingerJoint(context, finger, 'tip');
-    const proximal = getFingerJoint(context, finger, 'phalanx-proximal');
-    const metacarpal = getFingerJoint(context, finger, 'metacarpal');
-    const wrist = getJoint(context, 'wrist');
-    if (!tip || !wrist)
-        return null;
-    const reference = proximal ?? metacarpal;
-    if (!reference)
-        return null;
-    const referenceDistance = reference.distanceTo(wrist);
-    const tipDistance = tip.distanceTo(wrist);
-    const curlRatio = referenceDistance > EPSILON ? tipDistance / referenceDistance : 0;
-    return {
-        tip,
-        metacarpal,
-        referenceDistance,
-        tipDistance,
-        curlRatio,
-    };
-}
-function getFingerMetrics(context) {
-    return FINGER_ORDER.map((finger) => computeFingerMetric(context, finger)).filter(Boolean);
-}
-function getThumbMetrics(context) {
-    const tip = getJoint(context, 'thumb-tip');
-    const wrist = getJoint(context, 'wrist');
-    if (!tip || !wrist)
-        return undefined;
-    const metacarpal = getJoint(context, 'thumb-metacarpal') ??
-        getJoint(context, 'thumb-phalanx-proximal');
-    if (!metacarpal)
-        return undefined;
-    const referenceDistance = metacarpal.distanceTo(wrist);
-    const tipDistance = tip.distanceTo(wrist);
-    return {
-        tip,
-        metacarpal,
-        referenceDistance,
-        tipDistance,
-    };
+const EPSILON$1 = 1e-6;
+function getFingerJoint(context, finger, suffix) {
+    const prefix = FINGER_PREFIX[finger];
+    return context.getJoint(`${prefix}-${suffix}`);
 }
 function estimateHandScale(context) {
-    const wrist = getJoint(context, 'wrist');
-    const middleTip = getJoint(context, 'middle-finger-tip');
-    const middleBase = getJoint(context, 'middle-finger-metacarpal');
+    const wrist = context.getJoint('wrist');
+    const middleTip = context.getJoint('middle-finger-tip');
     const palmWidth = getPalmWidth(context);
     const measurements = [];
     if (wrist && middleTip)
         measurements.push(middleTip.distanceTo(wrist));
     if (palmWidth)
         measurements.push(palmWidth);
-    if (wrist && middleBase)
-        measurements.push(middleBase.distanceTo(wrist) * 2);
     if (!measurements.length)
         return 0.08;
     return average(measurements);
@@ -7027,7 +7384,7 @@ function getPalmWidth(context) {
     return indexBase.distanceTo(pinkyBase);
 }
 function getPalmNormal(context) {
-    const wrist = getJoint(context, 'wrist');
+    const wrist = context.getJoint('wrist');
     const indexBase = getFingerJoint(context, 'index', 'metacarpal');
     const pinkyBase = getFingerJoint(context, 'pinky', 'metacarpal');
     if (!wrist || !indexBase || !pinkyBase)
@@ -7065,49 +7422,561 @@ function getPalmUp(context) {
         return null;
     return up.normalize();
 }
-function getAdjacentFingerDistances(context) {
-    const tips = FINGER_ORDER.map((finger) => getFingerJoint(context, finger, 'tip'));
-    if (tips.some((tip) => !tip)) {
-        return { average: Infinity };
+function getPalmPose(context) {
+    const wrist = context.getJoint('wrist');
+    const indexBase = getFingerJoint(context, 'index', 'metacarpal');
+    const pinkyBase = getFingerJoint(context, 'pinky', 'metacarpal');
+    const width = getPalmWidth(context);
+    const normal = getPalmNormal(context);
+    const right = getPalmRight(context);
+    const up = getPalmUp(context);
+    if (!wrist ||
+        !indexBase ||
+        !pinkyBase ||
+        !width ||
+        !normal ||
+        !right ||
+        !up) {
+        return null;
     }
-    const distances = [
-        tips[0].distanceTo(tips[1]),
-        tips[1].distanceTo(tips[2]),
-        tips[2].distanceTo(tips[3]),
-    ];
-    return { average: average(distances) };
+    const center = new THREE.Vector3()
+        .add(wrist)
+        .add(indexBase)
+        .add(pinkyBase)
+        .multiplyScalar(1 / 3);
+    return { center, width, normal, right, up };
 }
-function getJoint(context, jointName) {
-    return context.joints.get(jointName);
+function getFingerBendAngles(context, finger) {
+    return getDigitBendAngles(context, finger);
 }
-function getFingerJoint(context, finger, suffix) {
-    const prefix = FINGER_PREFIX[finger];
-    return getJoint(context, `${prefix}-${suffix}`);
+function getFingerStraightness(context, finger) {
+    return getDigitStraightness(context, finger);
 }
-function fingerAlignmentScore(context, metrics, palmUp) {
-    const base = metrics.metacarpal ?? getJoint(context, 'wrist');
-    if (!base)
+function getFingerCurl(context, finger) {
+    return 1 - getFingerStraightness(context, finger);
+}
+function getFingerDirection(context, finger) {
+    return getDigitDirection(context, finger);
+}
+function getFingerPalmAlignment(context, finger) {
+    const direction = getFingerDirection(context, finger);
+    const palmUp = getPalmUp(context);
+    if (!direction || !palmUp)
         return 0;
-    const direction = new THREE.Vector3().subVectors(metrics.tip, base);
-    if (direction.lengthSq() === 0)
-        return 0;
-    direction.normalize();
-    return clamp01((direction.dot(palmUp) - 0.35) / 0.5);
+    return clamp01((direction.dot(palmUp) - 0.2) / 0.8);
 }
-function clamp01(value) {
-    return THREE.MathUtils.clamp(value, 0, 1);
+function getFingerSpread(context, fingerA, fingerB) {
+    const directionA = getFingerDirection(context, fingerA);
+    const directionB = getFingerDirection(context, fingerB);
+    if (!directionA || !directionB)
+        return 0;
+    return clamp01((1 - directionA.dot(directionB)) / 0.45);
+}
+function getAdjacentFingerSpreads(context) {
+    return {
+        indexMiddle: getFingerSpread(context, 'index', 'middle'),
+        middleRing: getFingerSpread(context, 'middle', 'ring'),
+        ringPinky: getFingerSpread(context, 'ring', 'pinky'),
+    };
+}
+function getThumbBendAngles(context) {
+    return getDigitBendAngles(context, 'thumb');
+}
+function getThumbStraightness(context) {
+    return getDigitStraightness(context, 'thumb');
+}
+function getThumbCurl(context) {
+    return 1 - getThumbStraightness(context);
+}
+function getThumbDirection(context) {
+    return getDigitDirection(context, 'thumb');
+}
+function getThumbOpposition(context, finger = 'index') {
+    const distance = getFingertipDistance(context, 'thumb', finger);
+    const scale = getPalmWidth(context) ?? estimateHandScale(context);
+    if (distance === null || scale < EPSILON$1)
+        return 0;
+    return clamp01(1 - distance / (scale * 0.7));
+}
+function getThumbVerticalDirection(context) {
+    const direction = getThumbDirection(context);
+    if (!direction)
+        return 0;
+    return direction.y;
+}
+function getFingertipDistance(context, digitA, digitB) {
+    const tipA = getDigitTip(context, digitA);
+    const tipB = getDigitTip(context, digitB);
+    if (!tipA || !tipB)
+        return null;
+    return tipA.distanceTo(tipB);
+}
+function getFingertipPalmDistance(context, digit) {
+    const tip = getDigitTip(context, digit);
+    const palmPose = getPalmPose(context);
+    if (!tip || !palmPose)
+        return null;
+    return tip.distanceTo(palmPose.center);
+}
+function getBoneVectors(context) {
+    return HAND_JOINT_IDX_CONNECTION_MAP.map(([joint1, joint2]) => {
+        const start = context.getJoint(HAND_JOINT_NAMES[joint1]);
+        const end = context.getJoint(HAND_JOINT_NAMES[joint2]);
+        if (!start || !end)
+            return new THREE.Vector3();
+        const boneVector = new THREE.Vector3().subVectors(end, start);
+        if (boneVector.lengthSq() === 0)
+            return boneVector;
+        return boneVector.normalize();
+    });
+}
+function getRelativeBoneAngles(context) {
+    const boneVectors = getBoneVectors(context);
+    const angles = new Float32Array(HAND_BONE_IDX_CONNECTION_MAP.length);
+    HAND_BONE_IDX_CONNECTION_MAP.forEach(([bone1, bone2], index) => {
+        angles[index] = boneVectors[bone1].dot(boneVectors[bone2]);
+    });
+    return angles;
 }
 function average(values) {
     if (!values.length)
         return 0;
     return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
+function clamp01(value) {
+    return THREE.MathUtils.clamp(value, 0, 1);
+}
+function getDigitBendAngles(context, digit) {
+    const segments = getDigitSegmentDirections(context, digit);
+    if (!segments || segments.length < 2)
+        return [];
+    const angles = [];
+    for (let i = 0; i < segments.length - 1; i++) {
+        angles.push(segments[i].dot(segments[i + 1]));
+    }
+    return angles;
+}
+function getDigitStraightness(context, digit) {
+    const bendAngles = getDigitBendAngles(context, digit);
+    if (!bendAngles.length)
+        return 0;
+    return average(bendAngles.map(normalizeStraightness));
+}
+function getDigitDirection(context, digit) {
+    const base = getDigitBase(context, digit);
+    const tip = getDigitTip(context, digit);
+    if (!base || !tip)
+        return null;
+    const direction = new THREE.Vector3().subVectors(tip, base);
+    if (direction.lengthSq() === 0)
+        return null;
+    return direction.normalize();
+}
+function getDigitBase(context, digit) {
+    return context.getJoint(DIGIT_JOINTS[digit][0]);
+}
+function getDigitTip(context, digit) {
+    return context.getJoint(DIGIT_JOINTS[digit][DIGIT_JOINTS[digit].length - 1]);
+}
+function getDigitSegmentDirections(context, digit) {
+    const joints = DIGIT_JOINTS[digit]
+        .map((jointName) => context.getJoint(jointName))
+        .filter(Boolean);
+    if (joints.length !== DIGIT_JOINTS[digit].length)
+        return null;
+    const segments = [];
+    for (let i = 0; i < joints.length - 1; i++) {
+        const segment = new THREE.Vector3().subVectors(joints[i + 1], joints[i]);
+        if (segment.lengthSq() === 0)
+            return null;
+        segments.push(segment.normalize());
+    }
+    return segments;
+}
+function normalizeStraightness(bendCosine) {
+    return clamp01((bendCosine - 0.55) / 0.4);
+}
+
+const EPSILON = 1e-6;
+function detectPinch(context, config) {
+    const distance = getFingertipDistance(context, 'thumb', 'index');
+    if (distance === null || !Number.isFinite(distance))
+        return undefined;
+    const scale = getPalmWidth(context) ?? estimateHandScale(context);
+    if (scale < EPSILON)
+        return { confidence: 0 };
+    const threshold = Math.max(config.threshold ?? 0, scale * 0.32, 0.025);
+    const distanceScore = clamp01((threshold * 1.8 - distance) / (threshold * 1.2));
+    const supportExtension = average(['middle', 'ring', 'pinky'].map((finger) => getFingerStraightness(context, finger)));
+    const supportPenalty = clamp01((supportExtension - 0.55) / 0.45);
+    const confidence = clamp01(distanceScore * (1 - supportPenalty * 0.35));
+    return {
+        confidence,
+        data: { distance, threshold, supportPenalty },
+    };
+}
+function detectOpenPalm(context, config) {
+    const straightnessScores = FINGER_ORDER.map((finger) => getFingerStraightness(context, finger));
+    const extensionScores = FINGER_ORDER.map((finger) => getFingerExtensionScore(context, finger));
+    const straightness = average(straightnessScores);
+    const extension = average(extensionScores);
+    const allFingersStraight = Math.min(...straightnessScores);
+    const allFingersExtended = Math.min(...extensionScores);
+    const palmAlignment = average(FINGER_ORDER.map((finger) => getFingerPalmAlignment(context, finger)));
+    const spread = getTipSpreadScore(context);
+    const openGate = Math.min(allFingersStraight, allFingersExtended);
+    const confidence = clamp01(openGate *
+        (straightness * 0.3 +
+            extension * 0.35 +
+            spread * 0.15 +
+            palmAlignment * 0.2));
+    return {
+        confidence,
+        data: {
+            straightness,
+            extension,
+            allFingersStraight,
+            allFingersExtended,
+            openGate,
+            palmAlignment,
+            spread,
+            threshold: config.threshold,
+        },
+    };
+}
+function detectFist(context, config) {
+    const closedScores = FINGER_ORDER.map((finger) => getFingerClosedScore(context, finger));
+    const closed = average(closedScores);
+    const scale = getPalmWidth(context) ?? estimateHandScale(context);
+    const palmDistances = FINGER_ORDER.map((finger) => getFingertipPalmDistance(context, finger)).filter((distance) => distance !== null);
+    const palmDistanceAverage = average(palmDistances);
+    const palmDistanceScore = scale > EPSILON ? clamp01(1 - palmDistanceAverage / (scale * 1.35)) : 0;
+    const thumbWrap = Math.max(getThumbOpposition(context, 'index'), getThumbOpposition(context, 'middle'));
+    const thumbStraightness = getThumbStraightness(context);
+    const thumbVertical = getThumbVerticalDirection(context);
+    const verticalThumbPenalty = thumbStraightness * clamp01((Math.abs(thumbVertical) - 0.25) / 0.5);
+    const baseConfidence = clamp01(closed * 0.7 + palmDistanceScore * 0.2 + thumbWrap * 0.1);
+    const confidence = clamp01(baseConfidence * (1 - verticalThumbPenalty * 0.85));
+    return {
+        confidence,
+        data: {
+            closed,
+            palmDistanceScore,
+            thumbWrap,
+            thumbStraightness,
+            thumbVertical,
+            verticalThumbPenalty,
+            threshold: config.threshold,
+        },
+    };
+}
+function detectThumbsUp(context, config) {
+    const thumbStraightness = getThumbStraightness(context);
+    const thumbVertical = clamp01((getThumbVerticalDirection(context) - 0.35) / 0.5);
+    const otherCurl = average(FINGER_ORDER.map((finger) => getFingerClosedScore(context, finger)));
+    const indexDistance = getFingertipDistance(context, 'thumb', 'index');
+    const scale = getPalmWidth(context) ?? estimateHandScale(context);
+    const separation = indexDistance !== null && scale > EPSILON
+        ? clamp01((indexDistance - scale * 0.65) / (scale * 0.5))
+        : 0;
+    const thumbWrapPenalty = Math.max(getThumbOpposition(context, 'index'), getThumbOpposition(context, 'middle'));
+    const thumbPose = thumbStraightness * thumbVertical;
+    const confidence = clamp01(thumbPose *
+        (otherCurl * 0.45 + separation * 0.35 + (1 - thumbWrapPenalty) * 0.2));
+    return {
+        confidence,
+        data: {
+            thumbStraightness,
+            thumbVertical,
+            otherCurl,
+            separation,
+            thumbWrapPenalty,
+            threshold: config.threshold,
+        },
+    };
+}
+function detectThumbsDown(context, config) {
+    const thumbStraightness = getThumbStraightness(context);
+    const thumbVertical = clamp01((-getThumbVerticalDirection(context) - 0.35) / 0.5);
+    const otherCurl = average(FINGER_ORDER.map((finger) => getFingerClosedScore(context, finger)));
+    const indexDistance = getFingertipDistance(context, 'thumb', 'index');
+    const scale = getPalmWidth(context) ?? estimateHandScale(context);
+    const separation = indexDistance !== null && scale > EPSILON
+        ? clamp01((indexDistance - scale * 0.65) / (scale * 0.5))
+        : 0;
+    const thumbWrapPenalty = Math.max(getThumbOpposition(context, 'index'), getThumbOpposition(context, 'middle'));
+    const thumbPose = thumbStraightness * thumbVertical;
+    const confidence = clamp01(thumbPose *
+        (otherCurl * 0.45 + separation * 0.35 + (1 - thumbWrapPenalty) * 0.2));
+    return {
+        confidence,
+        data: {
+            thumbStraightness,
+            thumbVertical,
+            otherCurl,
+            separation,
+            thumbWrapPenalty,
+            threshold: config.threshold,
+        },
+    };
+}
+function detectPoint(context, config) {
+    const indexStraightness = getFingerStraightness(context, 'index');
+    const indexAlignment = getFingerPalmAlignment(context, 'index');
+    const indexExtension = getFingerExtensionScore(context, 'index');
+    const middleClosed = getFingerClosedScore(context, 'middle');
+    const ringClosed = getFingerClosedScore(context, 'ring');
+    const pinkyClosed = getFingerClosedScore(context, 'pinky');
+    const otherCurl = average([middleClosed, ringClosed, pinkyClosed]);
+    const allOtherFingersClosed = Math.min(middleClosed, ringClosed, pinkyClosed);
+    const indexPose = average([
+        indexStraightness,
+        indexExtension,
+        Math.max(indexAlignment, 0.5),
+    ]);
+    const confidence = clamp01(indexPose * (otherCurl * 0.65 + allOtherFingersClosed * 0.35));
+    return {
+        confidence,
+        data: {
+            indexStraightness,
+            indexExtension,
+            indexAlignment,
+            otherCurl,
+            allOtherFingersClosed,
+            threshold: config.threshold,
+        },
+    };
+}
+function getFingerClosedScore(context, finger) {
+    return Math.max(getFingerCurl(context, finger), 1 - getFingerExtensionScore(context, finger));
+}
+function getFingerExtensionScore(context, finger) {
+    const distance = getFingertipPalmDistance(context, finger);
+    const scale = getPalmWidth(context) ?? estimateHandScale(context);
+    if (distance === null || scale < EPSILON)
+        return 0;
+    return clamp01((distance - scale * 0.45) / (scale * 0.85));
+}
+function detectSpread(context, config) {
+    const straightnessScores = FINGER_ORDER.map((finger) => getFingerStraightness(context, finger));
+    const extensionScores = FINGER_ORDER.map((finger) => getFingerExtensionScore(context, finger));
+    const straightness = average(straightnessScores);
+    const extension = average(extensionScores);
+    const allFingersStraight = Math.min(...straightnessScores);
+    const allFingersExtended = Math.min(...extensionScores);
+    const adjacentSpreads = getAdjacentFingerSpreads(context);
+    const directionSpread = average(Object.values(adjacentSpreads));
+    const tipSpread = getTipSpreadScore(context);
+    const spread = Math.max(directionSpread, tipSpread);
+    const palmAlignment = average(FINGER_ORDER.map((finger) => getFingerPalmAlignment(context, finger)));
+    const indexPinkySpread = getFingerSpread(context, 'index', 'pinky');
+    const openGate = average([allFingersStraight, allFingersExtended]);
+    const confidence = clamp01(openGate *
+        (straightness * 0.2 +
+            extension * 0.2 +
+            spread * 0.45 +
+            Math.max(indexPinkySpread, palmAlignment) * 0.15));
+    return {
+        confidence,
+        data: {
+            straightness,
+            extension,
+            allFingersStraight,
+            allFingersExtended,
+            openGate,
+            spread,
+            indexPinkySpread,
+            palmAlignment,
+            threshold: config.threshold,
+        },
+    };
+}
+function getTipSpreadScore(context) {
+    const scale = getPalmWidth(context) ?? estimateHandScale(context);
+    if (scale < EPSILON)
+        return 0;
+    const distances = [
+        getFingertipDistance(context, 'index', 'middle'),
+        getFingertipDistance(context, 'middle', 'ring'),
+        getFingertipDistance(context, 'ring', 'pinky'),
+    ].filter((distance) => distance !== null);
+    if (!distances.length)
+        return 0;
+    return clamp01((average(distances) - scale * 0.25) / (scale * 0.45));
+}
+
+class HeuristicGestureRecognizer {
+    constructor(initBuiltInGestures = true) {
+        this.gestures = new Map();
+        if (initBuiltInGestures) {
+            this.registerBuiltInGestures();
+        }
+    }
+    registerGesture(name, detector, config = {}) {
+        this.gestures.set(name, {
+            detector,
+            config: {
+                enabled: true,
+                ...config,
+            },
+        });
+        return this;
+    }
+    unregisterGesture(name) {
+        this.gestures.delete(name);
+        return this;
+    }
+    getGestureConfigurations() {
+        const configs = {};
+        for (const [name, gesture] of this.gestures.entries()) {
+            configs[name] = { ...gesture.config };
+        }
+        return configs;
+    }
+    recognize(context) {
+        const scores = {};
+        for (const [name, gesture] of this.gestures.entries()) {
+            scores[name] = gesture.detector(context, gesture.config);
+        }
+        return scores;
+    }
+    registerBuiltInGestures() {
+        this.registerGesture('pinch', detectPinch, {
+            enabled: true,
+            threshold: 0.025,
+        });
+        this.registerGesture('open-palm', detectOpenPalm);
+        this.registerGesture('fist', detectFist);
+        this.registerGesture('thumbs-up', detectThumbsUp);
+        this.registerGesture('thumbs-down', detectThumbsDown);
+        this.registerGesture('point', detectPoint, { enabled: false });
+        this.registerGesture('spread', detectSpread, {
+            enabled: false,
+            threshold: 0.04,
+        });
+    }
+}
 
 const HAND_INDEX_TO_LABEL = {
     [Handedness.LEFT]: 'left',
     [Handedness.RIGHT]: 'right',
 };
-const JOINT_TEMP_POOL = new Map();
+
+class WebXRHandContext {
+    constructor(handedness, handLabel, joints, jointRotations) {
+        this.handedness = handedness;
+        this.handLabel = handLabel;
+        this.joints = joints;
+        this.jointRotations = jointRotations;
+    }
+    getJoint(jointName) {
+        return this.joints.get(jointName);
+    }
+}
+class WebXRHandPoseEstimator {
+    constructor(user) {
+        this.user = user;
+    }
+    init({ user } = {}) {
+        if (user)
+            this.user = user;
+        return Promise.resolve();
+    }
+    getHandContext(handedness) {
+        if (!this.user?.hands)
+            return null;
+        const hand = this.user.hands.hands[handedness];
+        const handLabel = HAND_INDEX_TO_LABEL[handedness];
+        if (!hand?.joints || !handLabel)
+            return null;
+        const joints = new Map();
+        const jointRotations = new Map();
+        const position = new THREE.Vector3();
+        const rotation = new THREE.Quaternion();
+        const scale = new THREE.Vector3();
+        for (const jointName of HAND_JOINT_NAMES) {
+            const joint = hand.joints[jointName];
+            if (!joint)
+                continue;
+            joint.matrixWorld.decompose(position, rotation, scale);
+            joints.set(jointName, position.clone());
+            jointRotations.set(jointName, rotation.clone());
+        }
+        if (!joints.size)
+            return null;
+        return new WebXRHandContext(handedness, handLabel, joints, jointRotations);
+    }
+    getHandContexts() {
+        return {
+            left: this.getHandContext(Handedness.LEFT) ?? undefined,
+            right: this.getHandContext(Handedness.RIGHT) ?? undefined,
+        };
+    }
+}
+
+class GestureRecognitionOptions {
+    constructor(options) {
+        this.enabled = false;
+        this.minimumConfidence = 0.6;
+        this.updateIntervalMs = 33;
+        this.poseEstimator = new WebXRHandPoseEstimator();
+        this.gestureRecognizer = new HeuristicGestureRecognizer();
+        this.gestures = {};
+        if (options) {
+            const { poseEstimator, gestureRecognizer, gestures, ...baseOptions } = options;
+            deepMerge(this, baseOptions);
+            if (poseEstimator) {
+                this.poseEstimator = poseEstimator;
+            }
+            if (gestureRecognizer) {
+                this.gestureRecognizer = gestureRecognizer;
+            }
+            this.applyGestureRecognizerConfigurations();
+            if (gestures) {
+                for (const [name, config] of Object.entries(gestures)) {
+                    this.setGestureConfig(name, config);
+                }
+            }
+            return;
+        }
+        this.applyGestureRecognizerConfigurations();
+    }
+    enable() {
+        this.enabled = true;
+        return this;
+    }
+    setGestureEnabled(name, enabled) {
+        this.gestures[name] ??= { enabled };
+        this.gestures[name].enabled = enabled;
+        return this;
+    }
+    setPoseEstimator(poseEstimator) {
+        this.poseEstimator = poseEstimator;
+        return this;
+    }
+    setGestureRecognizer(gestureRecognizer) {
+        this.gestureRecognizer = gestureRecognizer;
+        this.gestures = {};
+        this.applyGestureRecognizerConfigurations();
+        return this;
+    }
+    setGestureConfig(name, config) {
+        const mergedConfig = {
+            ...this.gestures[name],
+            enabled: this.gestures[name]?.enabled ?? true,
+        };
+        deepMerge(mergedConfig, config);
+        this.gestures[name] = mergedConfig;
+        return this;
+    }
+    applyGestureRecognizerConfigurations() {
+        const configs = this.gestureRecognizer.getGestureConfigurations?.() ?? {};
+        for (const [name, config] of Object.entries(configs)) {
+            this.setGestureConfig(name, config);
+        }
+    }
+}
+
 class GestureRecognition extends Script {
     constructor() {
         super(...arguments);
@@ -7115,21 +7984,24 @@ class GestureRecognition extends Script {
             left: new Map(),
             right: new Map(),
         };
+        this.latestScores = {
+            left: null,
+            right: null,
+        };
+        this.pendingRecognition = {
+            left: false,
+            right: false,
+        };
         this.lastEvaluation = 0;
-        this.detectors = new Map();
-        this.activeProvider = null;
-        this.providerWarned = false;
     }
     static { this.dependencies = {
-        input: Input,
         user: User,
         options: GestureRecognitionOptions,
     }; }
-    async init({ options, user, input, }) {
+    async init({ options, user, }) {
         this.options = options;
-        this.user = user;
-        this.input = input;
-        this.configureProvider(true);
+        await this.options.poseEstimator.init?.({ user });
+        await this.options.gestureRecognizer.init?.();
         if (!this.options.enabled) {
             console.info('GestureRecognition initialized but disabled. Call options.enableGestures() to activate.');
         }
@@ -7137,11 +8009,8 @@ class GestureRecognition extends Script {
     update() {
         if (!this.options.enabled)
             return;
-        if (!this.user.hands?.isValid?.())
-            return;
-        this.configureProvider();
         const now = performance.now();
-        const interval = this.activeProvider === 'heuristics' ? 0 : this.options.updateIntervalMs;
+        const interval = this.options.updateIntervalMs;
         if (interval > 0 && now - this.lastEvaluation < interval) {
             return;
         }
@@ -7149,47 +8018,12 @@ class GestureRecognition extends Script {
         this.evaluateHand(Handedness.LEFT);
         this.evaluateHand(Handedness.RIGHT);
     }
-    configureProvider(force = false) {
-        const provider = this.options.provider;
-        if (!force && provider === this.activeProvider)
-            return;
-        this.detectors.clear();
-        switch (provider) {
-            case 'heuristics':
-                this.assignDetectors(heuristicDetectors);
-                this.providerWarned = false;
-                break;
-            case 'mediapipe':
-            case 'tfjs':
-                this.assignDetectors(heuristicDetectors);
-                if (!this.providerWarned) {
-                    console.warn(`GestureRecognition: provider '${provider}' is not yet implemented; falling back to heuristics.`);
-                    this.providerWarned = true;
-                }
-                break;
-            default:
-                this.assignDetectors(heuristicDetectors);
-                if (!this.providerWarned) {
-                    console.warn(`GestureRecognition: provider '${provider}' is unknown; falling back to heuristics.`);
-                    this.providerWarned = true;
-                }
-                break;
-        }
-        this.activeProvider = provider;
-    }
-    assignDetectors(detectors) {
-        for (const [name, detector] of Object.entries(detectors)) {
-            if (!detector)
-                continue;
-            this.detectors.set(name, detector);
-        }
-    }
     evaluateHand(handedness) {
         const handLabel = HAND_INDEX_TO_LABEL[handedness];
-        const activeMap = this.activeGestures[handLabel];
         if (!handLabel)
             return;
-        const context = this.buildHandContext(handedness, handLabel);
+        const activeMap = this.activeGestures[handLabel];
+        const context = this.options.poseEstimator.getHandContext(handedness);
         if (!context) {
             for (const [name] of activeMap.entries()) {
                 this.emitGesture('gestureend', { name, hand: handLabel, confidence: 0 });
@@ -7197,15 +8031,41 @@ class GestureRecognition extends Script {
             activeMap.clear();
             return;
         }
+        this.recognizeHand(context);
+        const scores = this.latestScores[handLabel];
+        if (!scores)
+            return;
+        this.emitFromScores(handLabel, scores);
+    }
+    recognizeHand(context) {
+        const handLabel = context.handLabel;
+        if (this.pendingRecognition[handLabel])
+            return;
+        const result = this.options.gestureRecognizer.recognize(context);
+        if (result instanceof Promise) {
+            this.pendingRecognition[handLabel] = true;
+            result
+                .then((scores) => {
+                this.latestScores[handLabel] = scores;
+            })
+                .catch((error) => {
+                console.error('GestureRecognition recognizer failed:', error);
+            })
+                .finally(() => {
+                this.pendingRecognition[handLabel] = false;
+            });
+            return;
+        }
+        this.latestScores[handLabel] = result;
+    }
+    emitFromScores(handLabel, scores) {
+        const activeMap = this.activeGestures[handLabel];
         const processed = new Set();
         for (const [name, config] of Object.entries(this.options.gestures)) {
             const gestureName = name;
             if (!config?.enabled)
                 continue;
-            const detector = this.detectors.get(gestureName);
-            if (!detector)
-                continue;
-            const result = detector(context, config);
+            const result = scores[gestureName];
             const isActive = result && result.confidence >= this.options.minimumConfidence;
             processed.add(gestureName);
             const previousState = activeMap.get(gestureName);
@@ -7249,41 +8109,400 @@ class GestureRecognition extends Script {
             }
         }
     }
-    buildHandContext(handedness, handLabel) {
-        if (!this.user.hands)
-            return null;
-        const hand = this.user.hands.hands[handedness];
-        if (!hand?.joints)
-            return null;
-        let jointCache = JOINT_TEMP_POOL.get(handLabel);
-        if (!jointCache) {
-            jointCache = new Map();
-            JOINT_TEMP_POOL.set(handLabel, jointCache);
-        }
-        const joints = jointCache;
-        joints.clear();
-        for (const jointName of HAND_JOINT_NAMES) {
-            const joint = hand.joints[jointName];
-            if (!joint)
-                continue;
-            let vector = joints.get(jointName);
-            if (!vector) {
-                vector = new THREE.Vector3();
-                joints.set(jointName, vector);
-            }
-            vector.setFromMatrixPosition(joint.matrixWorld);
-        }
-        if (!joints.size)
-            return null;
-        return {
-            handedness,
-            handLabel,
-            joints,
-        };
-    }
     emitGesture(type, detail) {
         const event = { type, detail, target: this };
         this.dispatchEvent(event);
+    }
+    dispose() {
+        this.options.poseEstimator.dispose?.();
+        this.options.gestureRecognizer.dispose?.();
+    }
+}
+
+/**
+ * Abstract base class for stroke recognition backends.
+ */
+class StrokeRecognizerBackend {
+    constructor(context) {
+        this.context = context;
+    }
+}
+
+const DEFAULT_SUPPORTED_SHAPES = [
+    'Triangle',
+    'Rectangle',
+    'Circle',
+    'V',
+    'Caret',
+];
+/** Calculates the Euclidean distance between two 2D points. */
+function distance(p1, p2) {
+    const dx = p2.x - p1.x;
+    const dy = p2.y - p1.y;
+    return Math.sqrt(dx * dx + dy * dy);
+}
+/** Calculates the total length of a path defined by a list of points. */
+function pathLength(points) {
+    let d = 0;
+    for (let i = 1; i < points.length; i++) {
+        d += distance(points[i - 1], points[i]);
+    }
+    return d;
+}
+/** Resamples a path into n evenly spaced points. */
+function resample(points, n) {
+    const interval = pathLength(points) / (n - 1);
+    let D = 0;
+    const newPoints = [points[0]];
+    const pts = points.slice();
+    let i = 1;
+    while (i < pts.length) {
+        const pt1 = pts[i - 1];
+        const pt2 = pts[i];
+        const d = distance(pt1, pt2);
+        if (D + d >= interval) {
+            const t = (interval - D) / d;
+            const q = {
+                x: pt1.x + t * (pt2.x - pt1.x),
+                y: pt1.y + t * (pt2.y - pt1.y),
+            };
+            newPoints.push(q);
+            pts.splice(i, 0, q);
+            D = 0;
+        }
+        else {
+            D += d;
+        }
+        i++;
+    }
+    if (newPoints.length === n - 1) {
+        newPoints.push(pts[pts.length - 1]);
+    }
+    return newPoints;
+}
+/** Calculates the centroid (center of mass) of a list of points. */
+function getCentroid(points) {
+    let x = 0, y = 0;
+    for (let i = 0; i < points.length; i++) {
+        x += points[i].x;
+        y += points[i].y;
+    }
+    return { x: x / points.length, y: y / points.length };
+}
+/** Calculates the bounding box of a list of points. */
+function boundingBox(points) {
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (let i = 0; i < points.length; i++) {
+        minX = Math.min(minX, points[i].x);
+        maxX = Math.max(maxX, points[i].x);
+        minY = Math.min(minY, points[i].y);
+        maxY = Math.max(maxY, points[i].y);
+    }
+    return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+}
+/** Rotates a list of points by a given angle in radians around their centroid. */
+function rotateBy(points, radians, centroid = getCentroid(points)) {
+    const cos = Math.cos(radians);
+    const sin = Math.sin(radians);
+    const newPoints = [];
+    for (let i = 0; i < points.length; i++) {
+        const qx = (points[i].x - centroid.x) * cos -
+            (points[i].y - centroid.y) * sin +
+            centroid.x;
+        const qy = (points[i].x - centroid.x) * sin +
+            (points[i].y - centroid.y) * cos +
+            centroid.y;
+        newPoints.push({ x: qx, y: qy });
+    }
+    return newPoints;
+}
+/** Rotates a list of points so that the angle between the first point and the centroid is zero. */
+function rotateToZero(points) {
+    const centroid = getCentroid(points);
+    const theta = Math.atan2(points[0].y - centroid.y, points[0].x - centroid.x);
+    return rotateBy(points, -theta, centroid);
+}
+/** Scales a list of points to a standard size (bounding box width/height becomes size). */
+function scaleTo(points, size) {
+    const B = boundingBox(points);
+    const newPoints = [];
+    const EPSILON = 1e-5;
+    const width = Math.max(B.width, EPSILON);
+    const height = Math.max(B.height, EPSILON);
+    for (let i = 0; i < points.length; i++) {
+        const qx = points[i].x * (size / width);
+        const qy = points[i].y * (size / height);
+        newPoints.push({ x: qx, y: qy });
+    }
+    return newPoints;
+}
+/** Translates a list of points so that their centroid matches the given point. */
+function translateTo(points, pt) {
+    const centroid = getCentroid(points);
+    const newPoints = [];
+    for (let i = 0; i < points.length; i++) {
+        const qx = points[i].x + pt.x - centroid.x;
+        const qy = points[i].y + pt.y - centroid.y;
+        newPoints.push({ x: qx, y: qy });
+    }
+    return newPoints;
+}
+/** Calculates the average distance between corresponding points in two paths. */
+function pathDistance(pts1, pts2) {
+    let d = 0;
+    for (let i = 0; i < pts1.length; i++) {
+        d += distance(pts1[i], pts2[i]);
+    }
+    return d / pts1.length;
+}
+/** Calculates the path distance between a candidate path and a template at a specific angle. */
+function distanceAtAngle(points, template, radians, centroid = getCentroid(points)) {
+    const newPoints = rotateBy(points, radians, centroid);
+    return pathDistance(newPoints, template.points);
+}
+/** Finds the minimum path distance between a candidate path and a template by searching for the best angle using Golden Section Search. */
+function distanceAtBestAngle(points, template, a, b, threshold) {
+    const phi = 0.5 * (Math.sqrt(5) - 1);
+    const centroid = getCentroid(points);
+    let x1 = phi * a + (1 - phi) * b;
+    let x2 = (1 - phi) * a + phi * b;
+    let f1 = distanceAtAngle(points, template, x1, centroid);
+    let f2 = distanceAtAngle(points, template, x2, centroid);
+    while (Math.abs(b - a) > threshold) {
+        if (f1 < f2) {
+            b = x2;
+            x2 = x1;
+            f2 = f1;
+            x1 = phi * a + (1 - phi) * b;
+            f1 = distanceAtAngle(points, template, x1, centroid);
+        }
+        else {
+            a = x1;
+            x1 = x2;
+            f1 = f2;
+            x2 = (1 - phi) * a + phi * b;
+            f2 = distanceAtAngle(points, template, x2, centroid);
+        }
+    }
+    return Math.min(f1, f2);
+}
+/**
+ * Implementation of the $1 Unistroke recognizer algorithm.
+ * It recognizes 2D strokes by comparing them against a set of predefined templates
+ * (e.g., Triangle, Rectangle, Circle) after preprocessing them (resampling, rotating, scaling).
+ * Supports bi-directional strokes by checking both forward and backward directions.
+ * Based on https://depts.washington.edu/acelab/proj/dollar/index.html.
+ */
+class OneDollarUnistrokeRecognizer extends StrokeRecognizerBackend {
+    constructor(context) {
+        super(context);
+        this.templates = [];
+        const enabledTemplates = context.supportedShapes || DEFAULT_SUPPORTED_SHAPES;
+        this.populateTemplates(enabledTemplates);
+    }
+    /**
+     * Recognizes a stroke from a list of 2D points by comparing it against stored templates.
+     * Supports both forward and backward matching to handle bi-directional strokes.
+     * @param points - The list of points captured during the stroke.
+     * @returns The recognition result containing the shape name and confidence score.
+     */
+    recognize(points) {
+        const resampledForward = resample(points, 64);
+        const resampledBackward = resampledForward.slice().reverse();
+        const pointsForwardUnrotated = this.scaleAndTranslate(resampledForward);
+        const pointsBackwardUnrotated = pointsForwardUnrotated.slice().reverse();
+        const pointsForwardRotated = this.scaleAndTranslate(rotateToZero(resampledForward));
+        const pointsBackwardRotated = this.scaleAndTranslate(rotateToZero(resampledBackward));
+        let bestDistance = Infinity;
+        let bestTemplateIndex = -1;
+        for (let i = 0; i < this.templates.length; i++) {
+            const useRotation = this.templates[i].useRotation;
+            const ptsForward = useRotation
+                ? pointsForwardRotated
+                : pointsForwardUnrotated;
+            const ptsBackward = useRotation
+                ? pointsBackwardRotated
+                : pointsBackwardUnrotated;
+            // Find the best matching angle for the stroke drawn in the forward direction.
+            // We search within +/- 45 degrees with a step threshold of 2 degrees.
+            const forwardDistance = distanceAtBestAngle(ptsForward, this.templates[i], (-45 * Math.PI) / 180, (45 * Math.PI) / 180, (2 * Math.PI) / 180);
+            // Find the best matching angle for the stroke drawn in the reverse direction.
+            // This allows the user to draw shapes in either direction (e.g. clockwise or counter-clockwise).
+            const backwardDistance = distanceAtBestAngle(ptsBackward, this.templates[i], (-45 * Math.PI) / 180, (45 * Math.PI) / 180, (2 * Math.PI) / 180);
+            if (forwardDistance < bestDistance) {
+                bestDistance = forwardDistance;
+                bestTemplateIndex = i;
+            }
+            if (backwardDistance < bestDistance) {
+                bestDistance = backwardDistance;
+                bestTemplateIndex = i;
+            }
+        }
+        return bestTemplateIndex !== -1
+            ? {
+                recognizedShape: this.templates[bestTemplateIndex].name,
+                confidence: this.calculateConfidence(bestDistance),
+            }
+            : { recognizedShape: 'Unknown', confidence: 0 };
+    }
+    /**
+     * Populates the templates based on the enabled shapes.
+     * @param enabledTemplates - List of shape names to enable.
+     */
+    populateTemplates(enabledTemplates) {
+        if (enabledTemplates.includes('Triangle')) {
+            // Triangle: Automatically generates 3 variations
+            this.addClosedTemplate('Triangle', [
+                { x: 0, y: 0 },
+                { x: 50, y: 100 },
+                { x: 100, y: 0 },
+            ]);
+        }
+        if (enabledTemplates.includes('Rectangle')) {
+            // Rectangle: Automatically generates 4 variations
+            this.addClosedTemplate('Rectangle', [
+                { x: 0, y: 0 },
+                { x: 0, y: 100 },
+                { x: 100, y: 100 },
+                { x: 100, y: 0 },
+            ]);
+        }
+        if (enabledTemplates.includes('V')) {
+            this.addTemplate('V', [
+                { x: 0, y: 100 },
+                { x: 50, y: 0 },
+                { x: 100, y: 100 },
+            ], false);
+        }
+        if (enabledTemplates.includes('Caret')) {
+            this.addTemplate('Caret', [
+                { x: 0, y: 0 },
+                { x: 50, y: 100 },
+                { x: 100, y: 0 },
+            ], false);
+        }
+        if (enabledTemplates.includes('Circle')) {
+            // Circle: Add 4 variations for different starting points
+            for (let offset = 0; offset < 4; offset++) {
+                const circlePoints = [];
+                const startAngle = (offset / 4) * Math.PI * 2;
+                for (let i = 0; i <= 20; i++) {
+                    const angle = startAngle + (i / 20) * Math.PI * 2;
+                    circlePoints.push({
+                        x: Math.cos(angle) * 100,
+                        y: Math.sin(angle) * 100,
+                    });
+                }
+                this.addTemplate('Circle', circlePoints);
+            }
+        }
+    }
+    /**
+     * Adds a template for a closed shape by automatically generating cyclic permutations
+     * of the points to support different starting points.
+     * @param name - The name of the shape.
+     * @param points -  The points defining the shape.
+     * @param useRotation - Whether to use rotation invariance.
+     */
+    addClosedTemplate(name, points, useRotation = true) {
+        const n = points.length;
+        for (let i = 0; i < n; i++) {
+            const permutedPoints = [];
+            for (let j = 0; j <= n; j++) {
+                permutedPoints.push(points[(i + j) % n]);
+            }
+            this.addTemplate(name, permutedPoints, useRotation);
+        }
+    }
+    /**
+     * Adds a template to the recognizer.
+     * @param name - The name of the shape.
+     * @param points - The points defining the shape.
+     * @param useRotation - Whether to use rotation invariance.
+     */
+    addTemplate(name, points, useRotation = true) {
+        this.templates.push({
+            name: name,
+            points: this.preprocess(points, useRotation),
+            useRotation: useRotation,
+        });
+    }
+    /**
+     * Preprocesses a list of points by resampling, optionally rotating to zero,
+     * scaling to a standard size, and translating to the origin.
+     * @param points - The list of points to preprocess.
+     * @param useRotation - Whether to rotate the points to zero.
+     * @returns The preprocessed list of points.
+     */
+    preprocess(points, useRotation = true) {
+        points = resample(points, 64);
+        if (useRotation) {
+            points = rotateToZero(points);
+        }
+        return this.scaleAndTranslate(points);
+    }
+    /**
+     * Scales points to a standard size and translates them to the origin.
+     * @param points - The list of points to scale and translate.
+     * @returns The scaled and translated list of points.
+     */
+    scaleAndTranslate(points) {
+        return translateTo(scaleTo(points, 250), { x: 0, y: 0 });
+    }
+    /**
+     * Calculates the confidence score based on the distance to the best matching template.
+     * @param distance - The distance to the best matching template.
+     * @returns The confidence score between 0 and 1.
+     */
+    calculateConfidence(distance) {
+        const size = 250; // Matching the size in preprocess
+        const diagonal = Math.sqrt(size * size + size * size);
+        const halfDiagonal = 0.5 * diagonal;
+        return 1 - distance / halfDiagonal;
+    }
+}
+
+class StrokeRecognitionOptions {
+    constructor(options) {
+        /** Master switch for the stroke recognition block. */
+        this.enabled = true;
+        /**
+         * Configuration for the stroke recognition provider.
+         */
+        this.providerConfig = {
+            /**
+             * Backing provider that recognizes strokes.
+             *  - 'onedollar': $1 Unistroke recognizer.
+             */
+            provider: 'onedollar',
+            /**
+             * Options specific to the 'onedollar' provider.
+             */
+            onedollar: {
+                supportedShapes: DEFAULT_SUPPORTED_SHAPES,
+            },
+        };
+        /**
+         * Delay in seconds after gesture start before recording points.
+         */
+        this.startDelay = 0.2;
+        /**
+         * Delay in seconds to ignore points before gesture end.
+         */
+        this.endDelay = 0.2;
+        /**
+         * The hand joint to track for stroke recognition.
+         */
+        this.joint = 'index-finger-tip';
+        /**
+         * Maximum number of points to capture in a single stroke.
+         */
+        this.maxPoints = 1000;
+        deepMerge(this, options);
+    }
+    enable() {
+        this.enabled = true;
+        return this;
     }
 }
 
@@ -7649,23 +8868,30 @@ const DEFAULT_MODE_TOGGLE_ORDER = {
 class SimulatorOptions {
     constructor(options) {
         this.initialCameraPosition = { x: 0, y: 1.5, z: 0 };
-        this.scenePath = XR_BLOCKS_ASSETS_PATH + 'simulator/scenes/XREmulatorsceneV5_livingRoom.glb';
-        this.scenePlanesPath = XR_BLOCKS_ASSETS_PATH +
-            'simulator/scenes/XREmulatorsceneV5_livingRoom_planes.json';
-        this.videoPath = undefined;
+        this.environments = [
+            {
+                name: 'Living Room',
+                scenePath: XR_BLOCKS_ASSETS_PATH +
+                    'simulator/scenes/XREmulatorsceneV5_livingRoom.glb',
+                scenePlanesPath: XR_BLOCKS_ASSETS_PATH +
+                    'simulator/scenes/XREmulatorsceneV5_livingRoom_planes.json',
+            },
+        ];
+        this.activeEnvironmentIndex = 0;
         this.initialScenePosition = { x: -1.6, y: 0.3, z: 0 };
         this.defaultMode = SimulatorMode.USER;
         this.defaultHand = Handedness.LEFT;
         this.modeToggle = {
+            enabled: false,
             toggleKey: Keycodes.LEFT_SHIFT_CODE,
             toggleOrder: DEFAULT_MODE_TOGGLE_ORDER,
         };
-        this.modeIndicator = {
+        this.simulatorSettingsPanel = {
             enabled: true,
-            element: 'xrblocks-simulator-mode-indicator',
+            element: 'xrblocks-simulator-settings',
         };
         this.instructions = {
-            enabled: true,
+            enabled: false,
             element: 'xrblocks-simulator-instructions',
             customInstructions: [],
         };
@@ -7679,6 +8905,11 @@ class SimulatorOptions {
         };
         this.stereo = {
             enabled: false,
+        };
+        this.deviceCamera = {
+            // Whether to enable the simulator camera feed.
+            // If disabled, the actual device camera will be used instead.
+            enabled: true,
         };
         // Whether to render the main scene to a render texture before rendering the simulator scene
         // or directly to the canvas after rendering the simulator scene.
@@ -7717,6 +8948,27 @@ class SoundOptions {
     constructor() {
         this.speechSynthesizer = new SpeechSynthesizerOptions();
         this.speechRecognizer = new SpeechRecognizerOptions();
+    }
+}
+
+/**
+ * Options for configuring integration with \@pmndrs/uikit.
+ */
+class UIKitOptions {
+    constructor() {
+        /** Whether UIKit support is enabled. */
+        this.enabled = false;
+    }
+    /**
+     * Enables \@pmndrs/uikit integration.
+     *
+     * @param uikit - The imported `@pmndrs/uikit` module instance.
+     * @returns The instance for chaining.
+     */
+    enable(uikit) {
+        this.enabled = true;
+        this.reversePainterSortStable = uikit.reversePainterSortStable;
+        return this;
     }
 }
 
@@ -7773,8 +9025,13 @@ class ObjectsOptions {
                     },
                 },
             },
-            /** Placeholder for a future MediaPipe backend configuration. */
-            mediapipe: {},
+            /** Configuration for MediaPipe backend. */
+            mediapipe: {
+                wasmFilesUrl: 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.34/wasm',
+                // Check https://ai.google.dev/edge/mediapipe/solutions/vision/object_detector#models for other models.
+                modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite2/int8/latest/efficientdet_lite2.tflite',
+                scoreThreshold: 0.5,
+            },
         };
         if (options) {
             deepMerge(this, options);
@@ -7804,6 +9061,34 @@ class PlanesOptions {
     }
 }
 
+class SoundsOptions {
+    constructor(options) {
+        this.enabled = false;
+        this.showDebugInfo = false;
+        this.backendConfig = {
+            activeBackend: 'mediapipe',
+            mediapipe: {
+                wasmFilesUrl: 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-audio@0.10.35/wasm',
+                modelAssetPath: 'https://tfhub.dev/google/lite-model/yamnet/classification/tflite/1?lite-format=tflite',
+                // Control the number of samples that should be accumulated before the MediaPipe Classifier
+                // can classify. Choosing a value that is too low would result in high occurrences of
+                // "Silence" classifications.
+                chunkSamples: 16000,
+            },
+        };
+        if (options) {
+            deepMerge(this, options);
+        }
+    }
+    /**
+     * Enables sound detection.
+     */
+    enable() {
+        this.enabled = true;
+        return this;
+    }
+}
+
 class WorldOptions {
     constructor(options) {
         this.debugging = false;
@@ -7812,6 +9097,7 @@ class WorldOptions {
         this.planes = new PlanesOptions();
         this.objects = new ObjectsOptions();
         this.meshes = new MeshDetectionOptions();
+        this.sounds = new SoundsOptions();
         if (options) {
             deepMerge(this, options);
         }
@@ -7838,6 +9124,14 @@ class WorldOptions {
     enableMeshDetection() {
         this.enabled = true;
         this.meshes.enable();
+        return this;
+    }
+    /**
+     * Enables sound detection.
+     */
+    enableSoundDetection() {
+        this.enabled = true;
+        this.sounds.enable();
         return this;
     }
 }
@@ -7868,6 +9162,12 @@ class InputOptions {
 class ReticleOptions {
     constructor() {
         this.enabled = true;
+        /**
+         * When set to a positive value, the reticle is placed at this distance
+         * (in meters) along the controller ray when no intersection is found,
+         * instead of being hidden. Set to 0 to hide the reticle on miss.
+         */
+        this.defaultDistance = 0;
     }
 }
 /**
@@ -7944,11 +9244,13 @@ class Options {
         this.deviceCamera = new DeviceCameraOptions();
         this.hands = new HandsOptions();
         this.gestures = new GestureRecognitionOptions();
+        this.strokes = new StrokeRecognitionOptions();
         this.reticles = new ReticleOptions();
         this.sound = new SoundOptions();
         this.ai = new AIOptions();
         this.simulator = new SimulatorOptions();
         this.world = new WorldOptions();
+        this.uikit = new UIKitOptions();
         this.physics = new PhysicsOptions();
         this.transition = new XRTransitionOptions();
         this.camera = {
@@ -7960,6 +9262,12 @@ class Options {
          */
         this.usePostprocessing = false;
         this.enableSimulator = true;
+        /**
+         * Whether to catch all exceptions thrown by developer scripts in the main update loop
+         * and physics step, and log them using console.error instead of crashing the application.
+         * When enabled, exceptions in one script will not prevent other scripts or subsystems from updating.
+         */
+        this.catchScriptExceptions = true;
         /**
          * Configuration for the XR session button.
          */
@@ -8000,8 +9308,10 @@ class Options {
      */
     enableVR() {
         this.xrSessionMode = 'immersive-vr';
-        this.simulator.scenePath = null;
-        this.simulator.scenePlanesPath = null;
+        if (this.simulator.environments[this.simulator.activeEnvironmentIndex]) {
+            this.simulator.environments[this.simulator.activeEnvironmentIndex].scenePath = null;
+            this.simulator.environments[this.simulator.activeEnvironmentIndex].scenePlanesPath = null;
+        }
         return this;
     }
     /**
@@ -8074,6 +9384,15 @@ class Options {
     enableGestures() {
         this.enableHands();
         this.gestures.enable();
+        return this;
+    }
+    /**
+     * Enables the stroke recognition block and ensures gestures are available.
+     * @returns The instance for chaining.
+     */
+    enableStrokes() {
+        this.enableGestures();
+        this.strokes.enable();
         return this;
     }
     /**
@@ -8304,19 +9623,46 @@ class SimulatorControllerState {
     }
 }
 
+// Enum of hand poses.
+var SimulatorHandPose;
+(function (SimulatorHandPose) {
+    SimulatorHandPose["NEUTRAL"] = "neutral";
+    SimulatorHandPose["RELAXED"] = "relaxed";
+    SimulatorHandPose["PINCHING"] = "pinching";
+    SimulatorHandPose["FIST"] = "fist";
+    SimulatorHandPose["THUMBS_UP"] = "thumbs_up";
+    SimulatorHandPose["POINTING"] = "pointing";
+    SimulatorHandPose["ROCK"] = "rock";
+    SimulatorHandPose["THUMBS_DOWN"] = "thumbs_down";
+    SimulatorHandPose["VICTORY"] = "victory";
+})(SimulatorHandPose || (SimulatorHandPose = {}));
+const SIMULATOR_HAND_POSE_NAMES = Object.freeze({
+    [SimulatorHandPose.NEUTRAL]: 'Neutral',
+    [SimulatorHandPose.RELAXED]: 'Relaxed',
+    [SimulatorHandPose.PINCHING]: 'Pinching',
+    [SimulatorHandPose.FIST]: 'Fist',
+    [SimulatorHandPose.THUMBS_UP]: 'Thumbs Up',
+    [SimulatorHandPose.POINTING]: 'Pointing',
+    [SimulatorHandPose.ROCK]: 'Rock',
+    [SimulatorHandPose.THUMBS_DOWN]: 'Thumbs Down',
+    [SimulatorHandPose.VICTORY]: 'Victory',
+});
+
 const { A_CODE: A_CODE$1, D_CODE: D_CODE$1, E_CODE: E_CODE$1, Q_CODE: Q_CODE$1, S_CODE: S_CODE$1, W_CODE: W_CODE$1 } = Keycodes;
 const vector3$6 = new THREE.Vector3();
 const euler$2 = new THREE.Euler();
+const HAND_POSES = Object.values(SimulatorHandPose);
 class SimulatorControlMode {
     /**
      * Create a SimulatorControlMode
      */
-    constructor(simulatorControllerState, downKeys, hands, setStereoRenderMode, toggleUserInterface) {
+    constructor(simulatorControllerState, downKeys, hands, setStereoRenderMode, toggleUserInterface, cycleSimulatorMode = () => { }) {
         this.simulatorControllerState = simulatorControllerState;
         this.downKeys = downKeys;
         this.hands = hands;
         this.setStereoRenderMode = setStereoRenderMode;
         this.toggleUserInterface = toggleUserInterface;
+        this.cycleSimulatorMode = cycleSimulatorMode;
     }
     /**
      * Initialize the simulator control mode.
@@ -8325,6 +9671,7 @@ class SimulatorControlMode {
         this.camera = camera;
         this.input = input;
         this.timer = timer;
+        input.gamepadController.init({ camera });
     }
     onPointerDown(_) { }
     onPointerUp(_) { }
@@ -8343,10 +9690,25 @@ class SimulatorControlMode {
     onModeActivated() { }
     onModeDeactivated() { }
     update() {
+        this.updateGamepad();
         this.updateCameraPosition();
         this.updateControllerPositions();
     }
+    /**
+     * Poll the gamepad and handle button actions. Called from all modes.
+     */
+    updateGamepad() {
+        const gp = this.input.gamepadController;
+        gp.update();
+        if (gp.userData.connected) {
+            this.updateGamepadUI(gp);
+        }
+    }
     updateCameraPosition() {
+        const gp = this.input.gamepadController;
+        // While a modal menu owns gamepad input, don't move the camera.
+        if (gp.menuActive)
+            return;
         const deltaTime = this.timer.getDelta();
         const cameraRotation = this.camera.quaternion;
         const cameraPosition = this.camera.position;
@@ -8356,6 +9718,78 @@ class SimulatorControlMode {
             .multiplyScalar(deltaTime)
             .applyQuaternion(cameraRotation);
         cameraPosition.add(vector3$6);
+        // Gamepad stick input (if connected). Skip while the tab isn't
+        // focused — the Gamepad API delivers state to every tab, so without
+        // this guard the camera moves in background tabs whenever the user
+        // touches the stick in the foreground tab.
+        if (gp.userData.connected && document.hasFocus()) {
+            const [lx, ly, rx, ry] = gp.getAxes();
+            // Left stick → move camera.
+            if (lx !== 0 || ly !== 0) {
+                vector3$6
+                    .set(lx, 0, ly)
+                    .multiplyScalar(deltaTime)
+                    .applyQuaternion(cameraRotation);
+                cameraPosition.add(vector3$6);
+            }
+            // Right stick → look (yaw + pitch).
+            if (rx !== 0 || ry !== 0) {
+                const LOOK_SPEED = 2.0;
+                euler$2.setFromQuaternion(cameraRotation, 'YXZ');
+                euler$2.y -= rx * LOOK_SPEED * deltaTime;
+                euler$2.x -= ry * LOOK_SPEED * deltaTime;
+                const PI_2 = Math.PI / 2;
+                euler$2.x = Math.max(-PI_2 + 0.01, Math.min(PI_2 - 0.01, euler$2.x));
+                cameraRotation.setFromEuler(euler$2);
+            }
+            // Configurable vertical movement bindings (defaults LT/RT, analog).
+            const downVal = gp.getButtonValue(gp.bindings.getBinding('moveDown'));
+            const upVal = gp.getButtonValue(gp.bindings.getBinding('moveUp'));
+            const verticalDelta = (upVal - downVal) * deltaTime;
+            if (verticalDelta !== 0) {
+                cameraPosition.y += verticalDelta;
+            }
+        }
+    }
+    /**
+     * Handle gamepad buttons for simulator UI using configurable bindings.
+     */
+    updateGamepadUI(gp) {
+        // Suppress normal actions during rebind or while a modal menu owns input.
+        if (gp.captureActive || gp.menuActive)
+            return;
+        const b = gp.bindings;
+        if (gp.isButtonJustPressed(b.getBinding('cycleHandPoseLeft'))) {
+            this.cycleHandPose(-1);
+        }
+        if (gp.isButtonJustPressed(b.getBinding('cycleHandPoseRight'))) {
+            this.cycleHandPose(1);
+        }
+        if (gp.isButtonJustPressed(b.getBinding('cycleSimulatorMode'))) {
+            this.cycleSimulatorMode();
+        }
+        if (gp.isButtonJustPressed(b.getBinding('toggleUI'))) {
+            this.toggleUserInterface();
+        }
+        if (gp.isButtonJustPressed(b.getBinding('toggleHand'))) {
+            this.hands.toggleHandedness();
+        }
+        if (gp.isButtonJustPressed(b.getBinding('openSettings'))) {
+            gp.onOpenSettings?.();
+        }
+    }
+    cycleHandPose(direction) {
+        const idx = this.simulatorControllerState.currentControllerIndex;
+        const currentPose = idx === 0 ? this.hands.leftHandPose : this.hands.rightHandPose;
+        const currentIdx = HAND_POSES.indexOf(currentPose ?? HAND_POSES[0]);
+        const nextIdx = (currentIdx + direction + HAND_POSES.length) % HAND_POSES.length;
+        const nextPose = HAND_POSES[nextIdx];
+        if (idx === 0) {
+            this.hands.setLeftHandLerpPose(nextPose);
+        }
+        else {
+            this.hands.setRightHandLerpPose(nextPose);
+        }
     }
     updateControllerPositions() {
         this.camera.updateMatrixWorld();
@@ -8421,6 +9855,7 @@ class SimulatorControllerMode extends SimulatorControlMode {
         }
     }
     update() {
+        this.updateGamepad();
         this.updateControllerPositions();
     }
     onModeActivated() {
@@ -8429,10 +9864,22 @@ class SimulatorControllerMode extends SimulatorControlMode {
     updateControllerPositions() {
         const deltaTime = this.timer.getDelta();
         const downKeys = this.downKeys;
+        const localPos = this.simulatorControllerState.localControllerPositions[this.simulatorControllerState.currentControllerIndex];
         vector3$5
             .set(Number(downKeys.has(D_CODE)) - Number(downKeys.has(A_CODE)), Number(downKeys.has(Q_CODE)) - Number(downKeys.has(E_CODE)), Number(downKeys.has(S_CODE)) - Number(downKeys.has(W_CODE)))
             .multiplyScalar(deltaTime);
-        this.simulatorControllerState.localControllerPositions[this.simulatorControllerState.currentControllerIndex].add(vector3$5);
+        localPos.add(vector3$5);
+        // Gamepad: left stick moves hand on XZ; configurable buttons on Y.
+        // Skip when the tab isn't focused so background tabs don't react to
+        // stick input meant for the foreground tab.
+        const gp = this.input.gamepadController;
+        if (gp.userData.connected && !gp.menuActive && document.hasFocus()) {
+            const [lx, ly] = gp.getAxes();
+            const downVal = gp.getButtonValue(gp.bindings.getBinding('moveDown'));
+            const upVal = gp.getButtonValue(gp.bindings.getBinding('moveUp'));
+            vector3$5.set(lx, upVal - downVal, ly).multiplyScalar(deltaTime);
+            localPos.add(vector3$5);
+        }
         super.updateControllerPositions();
     }
     toggleControllerIndex() {
@@ -8474,6 +9921,14 @@ class SimulatorUserMode extends SimulatorControlMode {
     }
     onModeDeactivated() {
         this.input.mouseController.disconnect();
+    }
+    /**
+     * In User mode, hands are hidden — switch to a hand-visible mode
+     * before cycling so the change is visible.
+     */
+    cycleHandPose(direction) {
+        this.cycleSimulatorMode();
+        super.cycleHandPose(direction);
     }
     onPointerDown(event) {
         if (event.buttons & 1) {
@@ -8526,19 +9981,61 @@ class SimulatorControls {
         this.downKeys = new Set();
         this.simulatorMode = SimulatorMode.USER;
         this.#enabled = true;
-        this._onPointerDown = this.onPointerDown.bind(this);
-        this._onPointerUp = this.onPointerUp.bind(this);
-        this._onKeyDown = this.onKeyDown.bind(this);
-        this._onKeyUp = this.onKeyUp.bind(this);
-        this._onPointerMove = this.onPointerMove.bind(this);
-        this._onBlur = this.onBlur.bind(this);
+        this.onPointerMove = (event) => {
+            if (!this.enabled)
+                return;
+            this.simulatorModeControls.onPointerMove(event);
+        };
+        this.onPointerDown = (event) => {
+            if (!this.enabled)
+                return;
+            this.simulatorModeControls.onPointerDown(event);
+            this.pointerDown = true;
+        };
+        this.onPointerUp = (event) => {
+            if (!this.enabled)
+                return;
+            this.simulatorModeControls.onPointerUp(event);
+            this.pointerDown = false;
+        };
+        this.onKeyDown = (event) => {
+            if (!this.enabled)
+                return;
+            // On macOS, keyup events are not fired for keys held when Command (Meta)
+            // is pressed. Clear all keys to prevent stuck movement.
+            if (event.metaKey ||
+                event.code === 'MetaLeft' ||
+                event.code === 'MetaRight') {
+                this.downKeys.clear();
+                return;
+            }
+            this.downKeys.add(event.code);
+            if (this.simulatorOptions?.modeToggle.enabled &&
+                event.code === this.simulatorOptions.modeToggle.toggleKey) {
+                this.setSimulatorMode(this.simulatorOptions.modeToggle.toggleOrder[this.simulatorMode]);
+            }
+            this.simulatorModeControls.onKeyDown(event);
+        };
+        this.onKeyUp = (event) => {
+            if (!this.enabled)
+                return;
+            this.downKeys.delete(event.code);
+        };
+        this.onBlur = () => {
+            this.downKeys.clear();
+        };
         const toggleUserInterface = () => {
             this.userInterface.toggleInterfaceVisible();
         };
+        const cycleSimulatorMode = () => {
+            if (!this.simulatorOptions)
+                return;
+            this.setSimulatorMode(this.simulatorOptions.modeToggle.toggleOrder[this.simulatorMode]);
+        };
         this.simulatorModes = {
-            [SimulatorMode.USER]: new SimulatorUserMode(this.simulatorControllerState, this.downKeys, hands, setStereoRenderMode, toggleUserInterface),
-            [SimulatorMode.POSE]: new SimulatorPoseMode(this.simulatorControllerState, this.downKeys, hands, setStereoRenderMode, toggleUserInterface),
-            [SimulatorMode.CONTROLLER]: new SimulatorControllerMode(this.simulatorControllerState, this.downKeys, hands, setStereoRenderMode, toggleUserInterface),
+            [SimulatorMode.USER]: new SimulatorUserMode(this.simulatorControllerState, this.downKeys, hands, setStereoRenderMode, toggleUserInterface, cycleSimulatorMode),
+            [SimulatorMode.POSE]: new SimulatorPoseMode(this.simulatorControllerState, this.downKeys, hands, setStereoRenderMode, toggleUserInterface, cycleSimulatorMode),
+            [SimulatorMode.CONTROLLER]: new SimulatorControllerMode(this.simulatorControllerState, this.downKeys, hands, setStereoRenderMode, toggleUserInterface, cycleSimulatorMode),
         };
         this.simulatorModeControls = this.simulatorModes[this.simulatorMode];
     }
@@ -8558,78 +10055,35 @@ class SimulatorControls {
     }
     connect() {
         const domElement = this.renderer.domElement;
-        document.addEventListener('keyup', this._onKeyUp);
-        document.addEventListener('keydown', this._onKeyDown);
-        domElement.addEventListener('pointermove', this._onPointerMove);
-        domElement.addEventListener('pointerdown', this._onPointerDown);
-        domElement.addEventListener('pointerup', this._onPointerUp);
+        document.addEventListener('keyup', this.onKeyUp);
+        document.addEventListener('keydown', this.onKeyDown);
+        domElement.addEventListener('pointermove', this.onPointerMove);
+        domElement.addEventListener('pointerdown', this.onPointerDown);
+        domElement.addEventListener('pointerup', this.onPointerUp);
         domElement.addEventListener('contextmenu', preventDefault);
-        window.addEventListener('blur', this._onBlur);
-        document.addEventListener('visibilitychange', this._onBlur);
+        window.addEventListener('blur', this.onBlur);
+        document.addEventListener('visibilitychange', this.onBlur);
     }
     update() {
         this.simulatorModeControls.update();
-    }
-    onPointerMove(event) {
-        if (!this.enabled)
-            return;
-        this.simulatorModeControls.onPointerMove(event);
-    }
-    onPointerDown(event) {
-        if (!this.enabled)
-            return;
-        this.simulatorModeControls.onPointerDown(event);
-        this.pointerDown = true;
-    }
-    onPointerUp(event) {
-        if (!this.enabled)
-            return;
-        this.simulatorModeControls.onPointerUp(event);
-        this.pointerDown = false;
-    }
-    onKeyDown(event) {
-        if (!this.enabled)
-            return;
-        // On macOS, keyup events are not fired for keys held when Command (Meta)
-        // is pressed. Clear all keys to prevent stuck movement.
-        if (event.metaKey ||
-            event.code === 'MetaLeft' ||
-            event.code === 'MetaRight') {
-            this.downKeys.clear();
-            return;
-        }
-        this.downKeys.add(event.code);
-        if (this.simulatorOptions &&
-            event.code === this.simulatorOptions.modeToggle.toggleKey) {
-            this.setSimulatorMode(this.simulatorOptions.modeToggle.toggleOrder[this.simulatorMode]);
-        }
-        this.simulatorModeControls.onKeyDown(event);
-    }
-    onKeyUp(event) {
-        if (!this.enabled)
-            return;
-        this.downKeys.delete(event.code);
-    }
-    onBlur() {
-        this.downKeys.clear();
     }
     setSimulatorMode(mode) {
         this.simulatorMode = mode;
         this.simulatorModeControls.onModeDeactivated();
         this.simulatorModeControls = this.simulatorModes[this.simulatorMode];
         this.simulatorModeControls.onModeActivated();
-        if (this.modeIndicatorElement) {
-            this.modeIndicatorElement.simulatorMode = mode;
+        if (this.simulatorSettingsPanelElement) {
+            this.simulatorSettingsPanelElement.simulatorMode = mode;
         }
     }
-    setModeIndicatorElement(element) {
+    setSimulatorSettingsPanelElement(element) {
         element.simulatorMode = this.simulatorMode;
         element.addEventListener('setSimulatorMode', (event) => {
             if (event instanceof SetSimulatorModeEvent) {
                 this.setSimulatorMode(event.simulatorMode);
             }
         });
-        this.modeIndicatorElement = element;
+        this.simulatorSettingsPanelElement = element;
     }
     setEnabled(value) {
         if (value == this.#enabled) {
@@ -8768,7 +10222,7 @@ class SimulatorDepth {
             projectionMatrix: this.projectionMatrixArray,
             transform: transform,
         };
-        this.depth.updateCPUDepthData(depthData, 0);
+        this.depth.updateCPUDepthData(depthData, 0, 'float32');
     }
 }
 
@@ -8784,1279 +10238,730 @@ class SimulatorHandPoseChangeRequestEvent extends Event {
     }
 }
 
-const LEFT_HAND_FIST = [
-    { t: [-0.0933, -0.0266, -0.1338], r: [0.1346, -0.1437, 0.0038, 0.9804] },
-    { t: [-0.0648, -0.0265, -0.1529], r: [0.0354, -0.3351, -0.1786, 0.9244] },
-    { t: [-0.0318, -0.0293, -0.1932], r: [0.0407, -0.2202, -0.5685, 0.7916] },
-    { t: [-0.0212, -0.0345, -0.2179], r: [0.0132, -0.12, -0.576, 0.8084] },
-    { t: [-0.0161, -0.039, -0.2469], r: [0.0132, -0.12, -0.576, 0.8084] },
-    { t: [-0.0731, -0.0197, -0.1569], r: [0.0999, -0.2377, 0.0822, 0.9627] },
-    { t: [-0.0399, -23e-4, -0.2221], r: [-0.4356, -0.1075, -0.0127, 0.8936] },
-    { t: [-0.0325, -0.0319, -0.246], r: [0.9331, 0.066, 0.0832, -0.3436] },
-    { t: [-0.035, -0.0462, -0.2296], r: [0.9874, 0.021, 0.128, -0.0903] },
-    { t: [-0.0408, -0.0496, -0.2076], r: [0.9874, 0.021, 0.128, -0.0903] },
-    { t: [-0.0853, -0.0187, -0.1614], r: [0.115, -0.1594, 0.0889, 0.9765] },
-    { t: [-0.0646, -7e-4, -0.2271], r: [-0.4919, -0.1197, 0.0382, 0.8616] },
-    { t: [-0.0544, -0.0353, -0.2477], r: [0.9309, 0.1571, 0.0605, -0.324] },
-    { t: [-0.0548, -0.0542, -0.2244], r: [0.9835, 0.1315, 0.1097, 0.0583] },
-    { t: [-0.0607, -0.051, -0.2013], r: [0.9835, 0.1315, 0.1097, 0.0583] },
-    { t: [-0.0972, -0.0213, -0.1628], r: [0.0881, -0.0966, 0.0847, 0.9878] },
-    { t: [-0.0856, -88e-4, -0.2263], r: [-0.4818, -0.1075, 0.1033, 0.8635] },
-    { t: [-0.0742, -0.0406, -0.246], r: [0.9378, 0.1774, 0.0089, -0.2983] },
-    { t: [-0.0715, -0.0585, -0.2205], r: [0.9769, 0.1847, 0.0804, 0.0714] },
-    { t: [-0.0757, -0.0552, -0.1994], r: [0.9769, 0.1847, 0.0804, 0.0714] },
-    { t: [-0.1078, -0.0253, -0.162], r: [0.0535, -0.0126, 0.0933, 0.9941] },
-    { t: [-0.1069, -0.0188, -0.2215], r: [-0.4433, -0.1294, 0.1523, 0.8738] },
-    { t: [-0.0939, -0.0444, -0.2398], r: [0.9002, 0.2018, -0.0275, -0.385] },
-    { t: [-0.0891, -0.0599, -0.2248], r: [0.9644, 0.2553, 0.0425, -0.0538] },
-    { t: [-0.0914, -0.0623, -0.2063], r: [0.9644, 0.2553, 0.0425, -0.0538] },
-];
-const RIGHT_HAND_FIST = [
-    { t: [0.0504, -0.0155, -0.1083], r: [0.1392, 0.117, -0.058, 0.9816] },
-    { t: [0.022, -0.0122, -0.1291], r: [-68e-4, 0.3422, 0.1705, 0.924] },
-    { t: [-0.011, -0.019, -0.1691], r: [-0.0952, 0.2257, 0.5977, 0.7634] },
-    { t: [-0.0171, -0.0305, -0.1932], r: [-0.249, 0.0162, 0.627, 0.738] },
-    { t: [-73e-4, -0.0427, -0.2185], r: [-0.249, 0.0162, 0.627, 0.738] },
-    { t: [0.0314, -68e-4, -0.133], r: [0.1126, 0.213, -0.1468, 0.9594] },
-    { t: [0.0035, 0.014, -0.1987], r: [-0.5177, 0.1865, 0.0124, 0.8349] },
-    { t: [-86e-4, -0.0192, -0.2148], r: [0.9671, -0.1129, -0.1466, -0.1747] },
-    { t: [-31e-4, -0.0274, -0.1952], r: [0.9714, -0.0492, -0.2057, 0.1081] },
-    { t: [0.0063, -0.0222, -0.1749], r: [0.9714, -0.0492, -0.2057, 0.1081] },
-    { t: [0.0441, -73e-4, -0.137], r: [0.1251, 0.1341, -0.1467, 0.972] },
-    { t: [0.0283, 0.0126, -0.2028], r: [-0.5227, 0.1469, -0.0852, 0.8354] },
-    { t: [0.0144, -0.0224, -0.2202], r: [0.9399, -0.2078, -0.0451, -0.2671] },
-    { t: [0.0137, -0.0382, -0.1948], r: [0.9665, -0.181, -0.1188, 0.1381] },
-    { t: [0.0207, -0.0318, -0.1726], r: [0.9665, -0.181, -0.1188, 0.1381] },
-    { t: [0.0559, -0.0112, -0.1379], r: [0.0948, 0.0732, -0.1351, 0.9836] },
-    { t: [0.0482, 0.0022, -0.2011], r: [-0.5015, 0.1223, -0.1588, 0.8416] },
-    { t: [0.0337, -0.0294, -0.2191], r: [0.9432, -0.2267, 0.0156, -0.2423] },
-    { t: [0.0294, -0.0438, -0.1916], r: [0.9569, -0.2379, -0.08, 0.1464] },
-    { t: [0.0346, -0.0376, -0.1714], r: [0.9569, -0.2379, -0.08, 0.1464] },
-    { t: [0.0662, -0.0164, -0.1368], r: [0.0546, -84e-4, -0.1349, 0.9893] },
-    { t: [0.068, -0.0102, -0.1955], r: [-0.4587, 0.1335, -0.2099, 0.853] },
-    { t: [0.0529, -0.0353, -0.2127], r: [0.9107, -0.2444, 0.0606, -0.3274] },
-    { t: [0.0466, -0.0483, -0.1959], r: [0.9518, -0.3056, -0.0236, 0.0063] },
-    { t: [0.0488, -0.0485, -0.1773], r: [0.9518, -0.3056, -0.0236, 0.0063] },
-];
+const SIMULATOR_HAND_COMMON_BIOMECHANICAL_CONSTRAINTS_DEGREES = {
+    'thumb-metacarpal': [
+        [-10, 55],
+        [-15, 45],
+        [-20, 45],
+    ],
+    'thumb-phalanx-proximal': [
+        [-10, 70],
+        [-15, 15],
+        [0, 0],
+    ],
+    'thumb-phalanx-distal': [
+        [-15, 80],
+        [0, 0],
+        [0, 0],
+    ],
+    'index-finger-metacarpal': [
+        [0, 0],
+        [0, 0],
+        [0, 0],
+    ],
+    'index-finger-phalanx-proximal': [
+        [-30, 90],
+        [-20, 20],
+        [-10, 10],
+    ],
+    'index-finger-phalanx-intermediate': [
+        [0, 110],
+        [0, 0],
+        [0, 0],
+    ],
+    'index-finger-phalanx-distal': [
+        [0, 80],
+        [0, 0],
+        [0, 0],
+    ],
+    'middle-finger-metacarpal': [
+        [0, 0],
+        [0, 0],
+        [0, 0],
+    ],
+    'middle-finger-phalanx-proximal': [
+        [-30, 90],
+        [-10, 10],
+        [-10, 10],
+    ],
+    'middle-finger-phalanx-intermediate': [
+        [0, 110],
+        [0, 0],
+        [0, 0],
+    ],
+    'middle-finger-phalanx-distal': [
+        [0, 80],
+        [0, 0],
+        [0, 0],
+    ],
+    'ring-finger-metacarpal': [
+        [0, 0],
+        [0, 0],
+        [0, 0],
+    ],
+    'ring-finger-phalanx-proximal': [
+        [-30, 90],
+        [-15, 15],
+        [-10, 10],
+    ],
+    'ring-finger-phalanx-intermediate': [
+        [0, 110],
+        [0, 0],
+        [0, 0],
+    ],
+    'ring-finger-phalanx-distal': [
+        [0, 80],
+        [0, 0],
+        [0, 0],
+    ],
+    'pinky-finger-metacarpal': [
+        [0, 0],
+        [0, 0],
+        [0, 0],
+    ],
+    'pinky-finger-phalanx-proximal': [
+        [-30, 90],
+        [-20, 20],
+        [-10, 10],
+    ],
+    'pinky-finger-phalanx-intermediate': [
+        [0, 110],
+        [0, 0],
+        [0, 0],
+    ],
+    'pinky-finger-phalanx-distal': [
+        [0, 80],
+        [0, 0],
+        [0, 0],
+    ],
+};
+const HAND_JOINT_NAME_SET = new Set(HAND_JOINT_NAMES);
+function parseSimulatorHandPoseRotations(json) {
+    if (!json || typeof json !== 'object' || Array.isArray(json)) {
+        return {};
+    }
+    const rotations = {};
+    for (const [jointName, value] of Object.entries(json)) {
+        if (!HAND_JOINT_NAME_SET.has(jointName))
+            continue;
+        if (!Array.isArray(value) ||
+            value.length !== 3 ||
+            !value.every((axisValue) => typeof axisValue === 'number')) {
+            continue;
+        }
+        rotations[jointName] = [value[0], value[1], value[2]];
+    }
+    return rotations;
+}
 
-const LEFT_HAND_PINCHING = [
-    { t: [-0.05, -0.08, -0.1], r: [0.5373, 0, 0, 0.8434], s: [1, 1, 1] },
+const LEFT_HAND_NEUTRAL = [
     {
-        t: [-0.0281, -0.0594, -0.1165],
-        r: [0.3072, -0.0483, -0.257, 0.915],
+        t: [-0.05, -0.08, -0.1],
+        r: [0.53411, 0.018204, -0.222429, 0.815436],
         s: [1, 1, 1],
     },
     {
-        t: [-83e-4, -0.0299, -0.1581],
-        r: [0.1832, 0.0632, -0.4718, 0.8602],
+        t: [-0.027338, -0.067039, -0.122241],
+        r: [0.394372, -0.415858, -0.220458, 0.789271],
         s: [1, 1, 1],
     },
     {
-        t: [-69e-4, -0.0195, -0.1841],
-        r: [0.2232, 0.1362, -0.6112, 0.747],
-        s: [1, 1, 0.9999],
-    },
-    {
-        t: [-63e-4, -51e-4, -0.2109],
-        r: [0.2232, 0.1362, -0.6112, 0.747],
-        s: [1, 1, 0.9999],
-    },
-    {
-        t: [-0.0369, -0.0541, -0.112],
-        r: [0.5858, -0.1038, 0.0205, 0.8035],
+        t: [0.017754, -0.043135, -0.143554],
+        r: [0.514492, -0.382382, -0.392596, 0.659546],
         s: [1, 1, 1],
     },
     {
-        t: [-0.024, 0.0142, -0.1465],
-        r: [0.1342, -0.1392, -0.0707, 0.9786],
-        s: [1.0001, 1, 0.9999],
-    },
-    {
-        t: [-0.0122, 0.0248, -0.1828],
-        r: [-0.2614, -0.0983, -0.1184, 0.9529],
-        s: [1.0001, 0.9999, 0.9999],
-    },
-    {
-        t: [-95e-4, 0.0131, -0.2017],
-        r: [-0.3454, -0.0506, -0.1338, 0.9275],
-        s: [1, 0.9999, 1],
-    },
-    {
-        t: [-98e-4, -28e-4, -0.219],
-        r: [-0.3454, -0.0506, -0.1338, 0.9275],
-        s: [1, 0.9999, 1],
-    },
-    {
-        t: [-0.0498, -0.0529, -0.1126],
-        r: [0.5552, -0.0196, 0.0307, 0.8309],
-        s: [1.0001, 1, 1],
-    },
-    {
-        t: [-0.0496, 0.0131, -0.1444],
-        r: [0.3957, -0.0669, 0.0916, 0.9113],
-        s: [1, 0.9999, 1],
-    },
-    {
-        t: [-0.0477, 0.0443, -0.173],
-        r: [0.0284, -0.1256, 0.0276, 0.9913],
-        s: [1, 1, 0.9999],
-    },
-    {
-        t: [-0.0403, 0.0463, -0.2027],
-        r: [-0.1956, -0.1387, -7e-3, 0.9708],
-        s: [1.0001, 1, 1],
-    },
-    {
-        t: [-0.0339, 0.036, -0.224],
-        r: [-0.1956, -0.1387, -7e-3, 0.9708],
-        s: [1.0001, 1, 1],
-    },
-    {
-        t: [-0.0612, -0.0561, -0.1137],
-        r: [0.5088, 0.0591, 0.0245, 0.8585],
-        s: [1, 1.0001, 1],
-    },
-    {
-        t: [-0.0697, 0.0021, -0.1467],
-        r: [0.464, -0.0595, 0.1601, 0.8692],
+        t: [0.043077, -0.032545, -0.149159],
+        r: [0.56159, -0.206804, -0.487, 0.636248],
         s: [1, 1, 1],
     },
     {
-        t: [-0.0713, 0.0348, -0.1698],
-        r: [0.0595, -0.1373, 0.0948, 0.9842],
-        s: [1.0001, 1.0001, 1],
-    },
-    {
-        t: [-0.0633, 0.0395, -0.2003],
-        r: [-0.1735, -0.159, 0.0354, 0.9713],
-        s: [1, 1, 0.9999],
-    },
-    {
-        t: [-0.0561, 0.0313, -0.2197],
-        r: [-0.1735, -0.159, 0.0354, 0.9713],
-        s: [1, 1, 0.9999],
-    },
-    {
-        t: [-0.0707, -0.0617, -0.1146],
-        r: [0.4573, 0.1467, 0.0408, 0.8762],
+        t: [0.067278, -0.017229, -0.159647],
+        r: [0.56161, -0.206811, -0.487017, 0.636271],
         s: [1, 1, 1],
     },
     {
-        t: [-0.0889, -0.0132, -0.148],
-        r: [0.4065, 0.0051, 0.2314, 0.8838],
-        s: [1, 0.9999, 1.0001],
-    },
-    {
-        t: [-0.0946, 0.0109, -0.1723],
-        r: [0.1595, -0.0578, 0.2175, 0.9612],
-        s: [1, 0.9999, 1],
-    },
-    {
-        t: [-0.094, 0.019, -0.1934],
-        r: [-0.0122, -0.1189, 0.1509, 0.9813],
-        s: [1.0001, 1, 1],
-    },
-    {
-        t: [-0.0904, 0.0182, -0.2123],
-        r: [-0.0122, -0.1189, 0.1509, 0.9813],
-        s: [1.0001, 1, 1],
-    },
-];
-const RIGHT_HAND_PINCHING = [
-    { t: [0.05, -0.08, -0.1], r: [0.5373, 0, 0, 0.8434], s: [1, 1, 1] },
-    {
-        t: [0.0279, -0.0593, -0.1166],
-        r: [0.307, 0.046, 0.2483, 0.9176],
+        t: [-0.032269, -0.059371, -0.115777],
+        r: [0.567561, -0.097691, -0.203196, 0.791889],
         s: [1, 1, 1],
     },
     {
-        t: [0.0082, -0.0291, -0.1587],
-        r: [0.1833, -0.0669, 0.4657, 0.8632],
-        s: [0.9999, 1, 1],
-    },
-    {
-        t: [0.0071, -0.0186, -0.185],
-        r: [0.2256, -0.1369, 0.6093, 0.7477],
-        s: [1, 1, 0.9999],
-    },
-    {
-        t: [0.0064, -39e-4, -0.212],
-        r: [0.2256, -0.1369, 0.6093, 0.7477],
-        s: [1, 1, 0.9999],
-    },
-    {
-        t: [0.037, -0.0539, -0.1122],
-        r: [0.5831, 0.1146, -0.0388, 0.8034],
-        s: [1, 0.9999, 1],
-    },
-    {
-        t: [0.0237, 0.0153, -0.147],
-        r: [0.1209, 0.0891, 0.0196, 0.9885],
-        s: [1, 0.9999, 1],
-    },
-    {
-        t: [0.0163, 0.0257, -0.1849],
-        r: [-0.2747, 0.0723, 0.0511, 0.9574],
-        s: [1, 0.9999, 0.9999],
-    },
-    {
-        t: [0.014, 0.0138, -0.204],
-        r: [-0.3165, 0.0337, 0.0633, 0.9459],
-        s: [1, 0.9999, 1],
-    },
-    {
-        t: [0.0136, -12e-4, -0.2226],
-        r: [-0.3165, 0.0337, 0.0633, 0.9459],
-        s: [1, 0.9999, 1],
-    },
-    {
-        t: [0.0501, -0.0527, -0.1126],
-        r: [0.5625, 0.0291, -0.0455, 0.825],
+        t: [-5609e-6, 0.002735, -0.153999],
+        r: [0.507186, -0.063324, -0.203911, 0.83502],
         s: [1, 1, 1],
     },
     {
-        t: [0.0497, 0.0141, -0.1449],
-        r: [0.3465, 0.0658, -0.0921, 0.9312],
-        s: [1.0001, 0.9999, 0.9999],
-    },
-    {
-        t: [0.0473, 0.0424, -0.177],
-        r: [0.0559, 0.1235, -0.0403, 0.9899],
-        s: [1.0001, 1, 0.9999],
-    },
-    {
-        t: [0.0402, 0.0463, -0.2069],
-        r: [-0.0703, 0.1381, -0.0195, 0.9877],
-        s: [1.0001, 1, 0.9999],
-    },
-    {
-        t: [0.0335, 0.0419, -0.2304],
-        r: [-0.0703, 0.1381, -0.0195, 0.9877],
-        s: [1.0001, 1, 0.9999],
-    },
-    {
-        t: [0.0615, -0.0561, -0.1136],
-        r: [0.5287, -0.0513, -0.0363, 0.8465],
-        s: [1.0001, 1, 0.9999],
-    },
-    {
-        t: [0.07, 0.003, -0.1472],
-        r: [0.4197, 0.0598, -0.1607, 0.8913],
-        s: [1, 1, 0.9999],
-    },
-    {
-        t: [0.0709, 0.0336, -0.1737],
-        r: [0.1329, 0.1258, -0.1128, 0.9766],
+        t: [0.007245, 0.035597, -0.172199],
+        r: [0.458663, -0.049313, -0.205676, 0.86312],
         s: [1, 1, 1],
     },
     {
-        t: [0.0643, 0.0431, -0.2038],
-        r: [-0.0172, 0.145, -0.068, 0.9869],
-        s: [1.0001, 0.9999, 1],
-    },
-    {
-        t: [0.0577, 0.0418, -0.2253],
-        r: [-0.0172, 0.145, -0.068, 0.9869],
-        s: [1.0001, 0.9999, 1],
-    },
-    {
-        t: [0.0711, -0.0617, -0.1145],
-        r: [0.4861, -0.139, -0.0517, 0.8612],
-        s: [1.0001, 0.9999, 1],
-    },
-    {
-        t: [0.0893, -0.0125, -0.1485],
-        r: [0.317, 0.0459, -0.2224, 0.9208],
-        s: [1.0001, 0.9999, 1],
-    },
-    {
-        t: [0.0902, 0.0078, -0.1772],
-        r: [0.1921, 0.0784, -0.2077, 0.9559],
-        s: [1, 1, 0.9999],
-    },
-    {
-        t: [0.0889, 0.0174, -0.1979],
-        r: [0.0936, 0.1253, -0.1462, 0.9768],
-        s: [1.0001, 1, 1],
-    },
-    {
-        t: [0.0857, 0.0208, -0.2167],
-        r: [0.0936, 0.1253, -0.1462, 0.9768],
-        s: [1.0001, 1, 1],
-    },
-];
-
-const LEFT_HAND_POINTING = [
-    { t: [-0.0283, -0.0376, -0.0293], r: [0.1372, -0.208, 0.241, 0.938] },
-    { t: [0.0016, -0.0246, -0.0431], r: [0.0106, -0.3992, -14e-4, 0.9168] },
-    { t: [0.0392, -0.0237, -0.0781], r: [-0.1, -0.2869, -0.466, 0.831] },
-    { t: [0.0496, -0.0357, -0.1004], r: [-0.1511, -0.183, -0.4918, 0.8377] },
-    { t: [0.0533, -0.0497, -0.1265], r: [-0.1511, -0.183, -0.4918, 0.8377] },
-    { t: [-78e-4, -0.0226, -0.0496], r: [0.1168, -0.3031, 0.3253, 0.8881] },
-    { t: [0.0265, 0.0074, -0.1082], r: [0.0563, -0.1303, 0.2725, 0.9516] },
-    { t: [0.0346, 0.0153, -0.1453], r: [-0.0635, -0.1606, 0.2541, 0.9516] },
-    { t: [0.0419, 0.0144, -0.1659], r: [-0.1073, -0.1342, 0.2464, 0.9538] },
-    { t: [0.0494, 0.0105, -0.1873], r: [-0.1073, -0.1342, 0.2464, 0.9538] },
-    { t: [-0.0184, -0.0273, -0.0562], r: [0.1156, -0.2249, 0.3238, 0.9117] },
-    { t: [0.0052, -21e-4, -0.1177], r: [-0.4452, -0.2871, 0.2041, 0.8233] },
-    { t: [0.0324, -0.0274, -0.1363], r: [0.8476, 0.3909, 0.031, -0.3574] },
-    { t: [0.0392, -0.0465, -0.1142], r: [0.9167, 0.3645, 0.16, -0.0352] },
-    { t: [0.032, -0.0501, -0.0915], r: [0.9167, 0.3645, 0.16, -0.0352] },
-    { t: [-0.028, -0.0348, -0.0593], r: [0.0757, -0.1724, 0.308, 0.9326] },
-    { t: [-0.01, -0.0186, -0.1201], r: [-0.5151, -0.3075, 0.2332, 0.7654] },
-    { t: [0.018, -0.0439, -0.1306], r: [0.8841, 0.4115, 0.0419, -0.2175] },
-    { t: [0.0214, -0.0572, -0.1026], r: [0.8915, 0.3885, 0.1955, 0.1266] },
-    { t: [0.0111, -0.0549, -0.0835], r: [0.8915, 0.3885, 0.1955, 0.1266] },
-    { t: [-0.0357, -0.0434, -0.0601], r: [0.0242, -0.0998, 0.3079, 0.9459] },
-    { t: [-0.0254, -0.037, -0.1183], r: [-0.4608, -0.35, 0.2807, 0.7658] },
-    { t: [0.0022, -0.0544, -0.1281], r: [0.8346, 0.4535, 0.0038, -0.3127] },
-    { t: [0.0089, -0.0663, -0.1107], r: [0.8657, 0.4769, 0.1519, -59e-4] },
-    { t: [0.003, -0.0699, -0.0932], r: [0.8657, 0.4769, 0.1519, -59e-4] },
-];
-const RIGHT_HAND_POINTING = [
-    { t: [-42e-4, -0.0248, -0.0222], r: [0.1163, -95e-4, -0.3006, 0.9466] },
-    { t: [-0.024, -0.0114, -0.048], r: [-0.052, 0.2376, -0.0719, 0.9673] },
-    { t: [-0.0482, -0.0149, -0.0937], r: [-0.2324, 0.2162, 0.3797, 0.869] },
-    { t: [-0.0535, -0.0306, -0.1155], r: [-0.2846, 0.1212, 0.4068, 0.8595] },
-    { t: [-0.0521, -0.0492, -0.1388], r: [-0.2846, 0.1212, 0.4068, 0.8595] },
-    { t: [-0.0129, -0.0119, -0.0508], r: [0.1258, 0.0866, -0.3895, 0.9083] },
-    { t: [-0.0173, 0.01, -0.1215], r: [0.1174, -0.0564, -0.3421, 0.9306] },
-    { t: [-97e-4, 0.018, -0.1587], r: [-0.0512, 0.0028, -0.347, 0.9365] },
-    { t: [-0.0105, 0.0158, -0.1805], r: [-0.1583, 0.003, -0.3458, 0.9249] },
-    { t: [-0.0137, 0.0085, -0.2021], r: [-0.1583, 0.003, -0.3458, 0.9249] },
-    { t: [-17e-4, -0.019, -0.052], r: [0.1155, 0.0062, -0.386, 0.9152] },
-    { t: [0.0038, -37e-4, -0.1206], r: [-0.2494, 0.0619, -0.3947, 0.8822] },
-    { t: [-86e-4, -0.0197, -0.1569], r: [-0.7146, 0.3231, -0.2612, 0.5628] },
-    { t: [-0.0306, -0.0389, -0.1502], r: [0.8643, -0.4054, 0.1306, -0.2676] },
-    { t: [-0.0406, -0.0469, -0.1297], r: [0.8643, -0.4054, 0.1306, -0.2676] },
-    { t: [0.0068, -0.0279, -0.0499], r: [0.0671, -0.0438, -0.3807, 0.9212] },
-    { t: [0.0155, -0.022, -0.1146], r: [-0.3096, 0.1005, -0.4385, 0.8377] },
-    { t: [-22e-4, -0.0389, -0.1452], r: [0.7388, -0.369, 0.2794, -0.4899] },
-    { t: [-0.0264, -0.0553, -0.1341], r: [0.852, -0.4611, 0.1257, -0.214] },
-    { t: [-0.0346, -0.0602, -0.1146], r: [0.852, -0.4611, 0.1257, -0.214] },
-    { t: [0.0126, -0.0374, -0.0464], r: [0.0105, -0.1129, -0.3882, 0.9146] },
-    { t: [0.0254, -0.0415, -0.1045], r: [-0.3088, 0.1125, -0.4825, 0.8119] },
-    { t: [0.0078, -0.0548, -0.1304], r: [-0.6368, 0.3211, -0.3767, 0.5912] },
-    { t: [-0.0112, -0.0661, -0.1307], r: [0.7535, -0.4639, 0.2523, -0.3916] },
-    { t: [-0.0244, -0.0737, -0.1196], r: [0.7535, -0.4639, 0.2523, -0.3916] },
-];
-
-const LEFT_HAND_RELAXED = [
-    { t: [-0.05, -0.08, -0.1], r: [0.5373, 0, 0, 0.8434] },
-    { t: [-0.0281, -0.0594, -0.1165], r: [0.3943, -0.2036, -0.3103, 0.8407] },
-    { t: [0.0026, -0.0299, -0.1518], r: [0.3476, -0.1049, -0.5285, 0.7674] },
-    { t: [0.0169, -0.0181, -0.1728], r: [0.3521, 0.0515, -0.635, 0.6857] },
-    { t: [0.0268, -18e-4, -0.1966], r: [0.3521, 0.0515, -0.635, 0.6857] },
-    { t: [-0.0369, -0.0541, -0.1121], r: [0.5882, -0.1036, 0.0205, 0.8018] },
-    { t: [-0.024, 0.0143, -0.1465], r: [0.3269, -0.0887, -3e-4, 0.9409] },
-    { t: [-0.0172, 0.0394, -0.1765], r: [-0.0114, -0.0813, -0.0286, 0.9962] },
-    { t: [-0.0138, 0.0388, -0.1986], r: [-0.1994, -0.0379, -0.0372, 0.9785] },
-    { t: [-0.0125, 0.0287, -0.2199], r: [-0.1994, -0.0379, -0.0372, 0.9785] },
-    { t: [-0.0499, -0.0528, -0.1125], r: [0.5569, -0.0203, 0.0319, 0.8297] },
-    { t: [-0.0496, 0.0131, -0.1445], r: [0.3908, -0.0273, 0.1089, 0.9136] },
-    { t: [-0.0513, 0.0438, -0.1738], r: [0.0747, -0.0923, 0.0634, 0.9909] },
-    { t: [-0.0462, 0.0488, -0.2036], r: [-0.1936, -0.1156, 0.0299, 0.9738] },
-    { t: [-0.0404, 0.0387, -0.2253], r: [-0.1936, -0.1156, 0.0299, 0.9738] },
-    { t: [-0.0612, -0.0561, -0.1138], r: [0.5095, 0.0572, 0.0274, 0.8581] },
-    { t: [-0.0698, 0.0022, -0.1468], r: [0.4396, -68e-4, 0.1748, 0.881] },
-    { t: [-0.0751, 0.0329, -0.1719], r: [0.071, -0.0911, 0.1344, 0.9842] },
-    { t: [-0.0703, 0.0383, -0.2029], r: [-0.1764, -0.1244, 0.0831, 0.9729] },
-    { t: [-0.0641, 0.0302, -0.2227], r: [-0.1764, -0.1244, 0.0831, 0.9729] },
-    { t: [-0.0708, -0.0616, -0.1145], r: [0.4571, 0.1437, 0.0457, 0.8765] },
-    { t: [-0.0889, -0.0132, -0.148], r: [0.3971, 0.0569, 0.2436, 0.883] },
-    { t: [-0.098, 0.0096, -0.1727], r: [0.1604, -85e-4, 0.243, 0.9566] },
-    { t: [-0.0997, 0.0171, -0.194], r: [-34e-4, -0.0735, 0.1859, 0.9798] },
-    { t: [-0.0979, 0.0165, -0.2131], r: [-34e-4, -0.0735, 0.1859, 0.9798] },
-];
-const RIGHT_HAND_RELAXED = [
-    { t: [0.05, -0.08, -0.1], r: [0.5373, 0, 0, 0.8434] },
-    { t: [0.0279, -0.0592, -0.1167], r: [0.3237, 0.1161, 0.293, 0.8921] },
-    { t: [0.0026, -0.0313, -0.158], r: [0.2171, 0.0194, 0.5207, 0.8254] },
-    { t: [-42e-4, -0.0219, -0.1837], r: [0.2597, -0.0685, 0.6498, 0.711] },
-    { t: [-0.01, -84e-4, -0.2107], r: [0.2597, -0.0685, 0.6498, 0.711] },
-    { t: [0.037, -0.0539, -0.1123], r: [0.5808, 0.1164, -0.0414, 0.8046] },
-    { t: [0.0238, 0.0151, -0.147], r: [0.3081, 0.0484, -0.0273, 0.9497] },
-    { t: [0.0206, 0.0393, -0.1786], r: [-0.0461, 0.0526, -0.0104, 0.9975] },
-    { t: [0.0185, 0.0373, -0.201], r: [-0.1674, 0.0162, -64e-4, 0.9857] },
-    { t: [0.0177, 0.0287, -0.223], r: [-0.1674, 0.0162, -64e-4, 0.9857] },
-    { t: [0.05, -0.0527, -0.1126], r: [0.5619, 0.0306, -0.0478, 0.8252] },
-    { t: [0.0497, 0.0138, -0.1449], r: [0.353, 0.0474, -0.1014, 0.9289] },
-    { t: [0.0491, 0.0425, -0.1767], r: [0.0777, 0.1076, -0.0559, 0.9896] },
-    { t: [0.0431, 0.0478, -0.2066], r: [-0.0679, 0.1248, -0.0343, 0.9893] },
-    { t: [0.0369, 0.0436, -0.2302], r: [-0.0679, 0.1248, -0.0343, 0.9893] },
-    { t: [0.0614, -0.0561, -0.1136], r: [0.5303, -0.05, -0.0384, 0.8455] },
-    { t: [0.0699, 0.0028, -0.1472], r: [0.4168, 0.0427, -0.1662, 0.8926] },
-    { t: [0.0722, 0.0331, -0.1739], r: [0.1339, 0.1107, -0.1236, 0.977] },
-    { t: [0.0665, 0.0425, -0.2041], r: [-0.0175, 0.1318, -0.0809, 0.9878] },
-    { t: [0.0606, 0.0413, -0.2257], r: [-0.0175, 0.1318, -0.0809, 0.9878] },
-    { t: [0.0711, -0.0618, -0.1145], r: [0.4891, -0.1378, -0.0535, 0.8596] },
-    { t: [0.0892, -0.0127, -0.1484], r: [0.3439, 0.0196, -0.23, 0.9102] },
-    { t: [0.0924, 0.0087, -0.1761], r: [0.1965, 0.0585, -0.2173, 0.9543] },
-    { t: [0.0921, 0.0184, -0.1968], r: [0.0936, 0.1069, -0.1575, 0.9773] },
-    { t: [0.0896, 0.0217, -0.2157], r: [0.0936, 0.1069, -0.1575, 0.9773] },
-];
-
-const LEFT_HAND_ROCK = [
-    {
-        t: [-0.0123, -0.0183, -0.0267],
-        r: [0.5149, -0.0845, -0.1158, 0.8452],
+        t: [0.013177, 0.052938, -0.185024],
+        r: [0.397899, -2456e-6, -0.189554, 0.897684],
         s: [1, 1, 1],
     },
     {
-        t: [0.0153, -52e-4, -0.0437],
-        r: [0.2665, -0.0899, -0.3721, 0.8846],
+        t: [0.016515, 0.069224, -0.201788],
+        r: [0.397916, -2456e-6, -0.189562, 0.897722],
         s: [1, 1, 1],
     },
     {
-        t: [0.0335, 0.0154, -0.0867],
-        r: [0.0177, 0.1842, -0.6731, 0.716],
+        t: [-0.043623, -0.053662, -0.112719],
+        r: [0.553746, -7309e-6, -0.191796, 0.810263],
         s: [1, 1, 1],
     },
     {
-        t: [0.0267, 0.0228, -0.1122],
-        r: [0.0728, 0.2226, -0.6735, 0.7011],
+        t: [-0.028562, 0.010251, -0.145199],
+        r: [0.472064, 0.017109, -0.111029, 0.874356],
         s: [1, 1, 1],
     },
     {
-        t: [0.019, 0.0341, -0.1386],
-        r: [0.0728, 0.2226, -0.6735, 0.7011],
+        t: [-0.02549, 0.045618, -0.168513],
+        r: [0.441765, -0.01643, -0.133573, 0.886956],
         s: [1, 1, 1],
     },
     {
-        t: [0.0067, 0.0029, -0.0406],
-        r: [0.475, -0.2118, -0.0726, 0.851],
+        t: [-0.021146, 0.069622, -0.187059],
+        r: [0.310755, -5124e-6, -0.143074, 0.939638],
         s: [1, 1, 1],
     },
     {
-        t: [0.0388, 0.061, -0.0749],
-        r: [0.5779, -0.1002, -0.0602, 0.8077],
+        t: [-0.019044, 0.083146, -0.207534],
+        r: [0.310762, -5124e-6, -0.143078, 0.939662],
         s: [1, 1, 1],
     },
     {
-        t: [0.0481, 0.097, -0.086],
-        r: [0.5059, -0.0922, -0.0672, 0.855],
+        t: [-0.055288, -0.052779, -0.110872],
+        r: [0.521068, 0.080546, -0.193884, 0.827277],
         s: [1, 1, 1],
     },
     {
-        t: [0.0529, 0.1158, -0.0964],
-        r: [0.4458, -0.0565, -0.053, 0.8918],
+        t: [-0.051159, 0.007143, -0.141754],
+        r: [0.461693, 0.031862, -0.045643, 0.885256],
         s: [1, 1, 1],
     },
     {
-        t: [0.0562, 0.1334, -0.1107],
-        r: [0.4458, -0.0565, -0.053, 0.8918],
+        t: [-0.051676, 0.039517, -0.165253],
+        r: [0.378491, 0.011831, -0.061086, 0.923512],
         s: [1, 1, 1],
     },
     {
-        t: [-52e-4, 0.0075, -0.0412],
-        r: [0.5055, -0.126, -0.0623, 0.8513],
+        t: [-0.051113, 0.062013, -0.187766],
+        r: [0.260819, 0.021358, -0.083438, 0.961583],
         s: [1, 1, 1],
     },
     {
-        t: [0.0144, 0.0671, -0.0735],
-        r: [0.1227, -0.0631, -0.0269, 0.9901],
+        t: [-0.051187, 0.072388, -0.207475],
+        r: [0.260827, 0.021359, -0.083441, 0.961614],
         s: [1, 1, 1],
     },
     {
-        t: [0.0199, 0.0775, -0.1133],
-        r: [-0.4479, -0.0687, -0.0876, 0.8871],
+        t: [-0.066037, -0.054584, -0.108849],
+        r: [0.488069, 0.176432, -0.171185, 0.837447],
         s: [1, 1, 1],
     },
     {
-        t: [0.0211, 0.0534, -0.1312],
-        r: [-0.6828, -0.0523, -0.1046, 0.7212],
+        t: [-0.074056, -635e-6, -0.137437],
+        r: [0.440891, 0.100924, 0.027575, 0.891356],
         s: [1, 1, 1],
     },
     {
-        t: [0.0192, 0.0294, -0.1316],
-        r: [-0.6828, -0.0523, -0.1046, 0.7212],
+        t: [-0.080655, 0.025614, -0.159345],
+        r: [0.437071, 0.097627, 0.021249, 0.893713],
         s: [1, 1, 1],
     },
     {
-        t: [-0.0167, 0.0074, -0.0424],
-        r: [0.491, -0.0372, -0.0778, 0.8669],
+        t: [-0.085037, 0.043556, -0.172445],
+        r: [0.3904, 0.08214, -0.029839, 0.916297],
         s: [1, 1, 1],
     },
     {
-        t: [-75e-4, 0.0623, -0.0758],
-        r: [0.1717, -0.0904, 0.0273, 0.9806],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-7e-4, 0.0753, -0.1121],
-        r: [-0.3257, -0.1136, -0.0418, 0.9377],
-        s: [1, 1, 1],
-    },
-    {
-        t: [0.005, 0.0561, -0.1361],
-        r: [-0.5492, -0.1111, -0.0905, 0.8233],
-        s: [1, 1, 1],
-    },
-    {
-        t: [0.0066, 0.0356, -0.1433],
-        r: [-0.5492, -0.1111, -0.0905, 0.8233],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-0.0273, 0.0051, -0.0431],
-        r: [0.4566, 0.0629, -0.0766, 0.8841],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-0.0297, 0.0531, -0.0769],
-        r: [0.3942, -35e-4, 0.1163, 0.9116],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-0.0317, 0.0768, -0.1013],
-        r: [0.4582, 0.0006, 0.1099, 0.882],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-0.0341, 0.0951, -0.1136],
-        r: [0.4085, -0.0179, 0.0535, 0.911],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-0.0354, 0.1086, -0.1266],
-        r: [0.4085, -0.0179, 0.0535, 0.911],
+        t: [-0.08881, 0.056942, -0.18567],
+        r: [0.390393, 0.082139, -0.029838, 0.916279],
         s: [1, 1, 1],
     },
 ];
-const RIGHT_HAND_ROCK = [
+const RIGHT_HAND_NEUTRAL = [
     {
-        t: [0.0015, -0.0417, -0.0513],
-        r: [0.5617, 0.0123, 0.1355, 0.8161],
+        t: [0.05, -0.08, -0.1],
+        r: [0.53411, -0.018204, 0.222429, 0.815436],
         s: [1, 1, 1],
     },
     {
-        t: [-0.0235, -0.025, -0.07],
-        r: [0.2818, 0.0046, 0.4006, 0.8718],
+        t: [0.027338, -0.067039, -0.122241],
+        r: [0.394372, 0.415858, 0.220458, 0.789271],
         s: [1, 1, 1],
     },
     {
-        t: [-0.0354, -1e-4, -0.1128],
-        r: [-0.0257, -0.2764, 0.6652, 0.6931],
+        t: [-0.017754, -0.043135, -0.143554],
+        r: [0.514492, 0.382382, 0.392596, 0.659546],
         s: [1, 1, 1],
     },
     {
-        t: [-0.0238, 0.0089, -0.1359],
-        r: [-6e-4, -0.3419, 0.6556, 0.6733],
+        t: [-0.043077, -0.032545, -0.149159],
+        r: [0.56159, 0.206804, 0.487, 0.636248],
         s: [1, 1, 1],
     },
     {
-        t: [-88e-4, 0.0215, -0.1584],
-        r: [-6e-4, -0.3419, 0.6556, 0.6733],
+        t: [-0.067278, -0.017229, -0.159647],
+        r: [0.56161, 0.206811, 0.487017, 0.636271],
         s: [1, 1, 1],
     },
     {
-        t: [-0.015, -0.0179, -0.0645],
-        r: [0.5302, 0.1299, 0.1154, 0.8299],
+        t: [0.032269, -0.059371, -0.115777],
+        r: [0.567561, 0.097691, 0.203196, 0.791889],
         s: [1, 1, 1],
     },
     {
-        t: [-0.0403, 0.0456, -0.0947],
-        r: [0.5874, 0.0115, 0.0813, 0.8051],
+        t: [0.005609, 0.002735, -0.153999],
+        r: [0.507186, 0.063324, 0.203911, 0.83502],
         s: [1, 1, 1],
     },
     {
-        t: [-0.0451, 0.0825, -0.1058],
-        r: [0.5048, 0.001, 0.0806, 0.8595],
+        t: [-7245e-6, 0.035597, -0.172199],
+        r: [0.458663, 0.049313, 0.205676, 0.86312],
         s: [1, 1, 1],
     },
     {
-        t: [-0.0468, 0.1015, -0.1165],
-        r: [0.4494, -0.0352, 0.0601, 0.8906],
+        t: [-0.013177, 0.052938, -0.185024],
+        r: [0.397899, 0.002456, 0.189554, 0.897684],
         s: [1, 1, 1],
     },
     {
-        t: [-0.0465, 0.1195, -0.1308],
-        r: [0.4494, -0.0352, 0.0601, 0.8906],
+        t: [-0.016515, 0.069224, -0.201788],
+        r: [0.397916, 0.002456, 0.189562, 0.897722],
         s: [1, 1, 1],
     },
     {
-        t: [-29e-4, -0.0139, -0.063],
-        r: [0.5567, 0.046, 0.0996, 0.8234],
+        t: [0.043623, -0.053662, -0.112719],
+        r: [0.553746, 0.007309, 0.191796, 0.810263],
         s: [1, 1, 1],
     },
     {
-        t: [-0.016, 0.0502, -0.0895],
-        r: [0.1657, -0.0189, 0.0053, 0.986],
+        t: [0.028562, 0.010251, -0.145199],
+        r: [0.472064, -0.017109, 0.111029, 0.874356],
         s: [1, 1, 1],
     },
     {
-        t: [-0.0146, 0.0642, -0.1285],
-        r: [-0.4455, 0.0104, 0.0258, 0.8948],
+        t: [0.02549, 0.045618, -0.168513],
+        r: [0.441765, 0.01643, 0.133573, 0.886956],
         s: [1, 1, 1],
     },
     {
-        t: [-0.0143, 0.0404, -0.1468],
-        r: [-0.7027, 0.0133, 0.0292, 0.7107],
+        t: [0.021146, 0.069622, -0.187059],
+        r: [0.310755, 0.005124, 0.143074, 0.939638],
         s: [1, 1, 1],
     },
     {
-        t: [-0.0137, 0.0163, -0.146],
-        r: [-0.7027, 0.0133, 0.0292, 0.7107],
+        t: [0.019044, 0.083146, -0.207534],
+        r: [0.310762, 0.005124, 0.143078, 0.939662],
         s: [1, 1, 1],
     },
     {
-        t: [0.0087, -0.0144, -0.0627],
-        r: [0.5389, -0.0411, 0.1061, 0.8346],
+        t: [0.055288, -0.052779, -0.110872],
+        r: [0.521068, -0.080546, 0.193884, 0.827277],
         s: [1, 1, 1],
     },
     {
-        t: [0.0058, 0.0446, -0.0897],
-        r: [0.2331, 0.0139, -0.0389, 0.9716],
+        t: [0.051159, 0.007143, -0.141754],
+        r: [0.461693, -0.031862, 0.045643, 0.885256],
         s: [1, 1, 1],
     },
     {
-        t: [0.0052, 0.0621, -0.1248],
-        r: [-0.3041, 0.0513, -24e-4, 0.9512],
+        t: [0.051676, 0.039517, -0.165253],
+        r: [0.378491, -0.011831, 0.061086, 0.923512],
         s: [1, 1, 1],
     },
     {
-        t: [0.0022, 0.0442, -0.1503],
-        r: [-0.5472, 0.0609, 0.0335, 0.8341],
+        t: [0.051113, 0.062013, -0.187766],
+        r: [0.260819, -0.021358, 0.083438, 0.961583],
         s: [1, 1, 1],
     },
     {
-        t: [0.0009, 0.0239, -0.1579],
-        r: [-0.5472, 0.0609, 0.0335, 0.8341],
+        t: [0.051187, 0.072388, -0.207475],
+        r: [0.260827, -0.021359, 0.083441, 0.961614],
         s: [1, 1, 1],
     },
     {
-        t: [0.0194, -0.0172, -0.0627],
-        r: [0.5054, -0.1365, 0.0899, 0.8473],
+        t: [0.066037, -0.054584, -0.108849],
+        r: [0.488069, -0.176432, 0.171185, 0.837447],
         s: [1, 1, 1],
     },
     {
-        t: [0.0276, 0.0346, -0.0893],
-        r: [0.4597, -0.0527, -0.1093, 0.8797],
+        t: [0.074056, -635e-6, -0.137437],
+        r: [0.440891, -0.100924, -0.027575, 0.891356],
         s: [1, 1, 1],
     },
     {
-        t: [0.0334, 0.0611, -0.1099],
-        r: [0.5162, -0.056, -0.0989, 0.8489],
+        t: [0.080655, 0.025614, -0.159345],
+        r: [0.437071, -0.097627, -0.021249, 0.893713],
         s: [1, 1, 1],
     },
     {
-        t: [0.0378, 0.0805, -0.1194],
-        r: [0.4448, -0.0407, -0.0462, 0.8935],
+        t: [0.085037, 0.043556, -0.172445],
+        r: [0.3904, -0.08214, 0.029839, 0.916297],
         s: [1, 1, 1],
     },
     {
-        t: [0.0411, 0.0949, -0.1311],
-        r: [0.4448, -0.0407, -0.0462, 0.8935],
+        t: [0.08881, 0.056942, -0.18567],
+        r: [0.390393, -0.082139, 0.029838, 0.916279],
         s: [1, 1, 1],
     },
 ];
 
-const LEFT_HAND_THUMBS_DOWN = [
-    {
-        t: [-0.0169, 0.0317, -0.0845],
-        r: [0.2721, -0.3488, -0.6314, 0.6369],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-19e-4, 0.008, -0.1021],
-        r: [-0.0533, 0.5043, 0.7891, -0.3467],
-        s: [1, 1, 1],
-    },
-    {
-        t: [0.0208, -0.0318, -0.1276],
-        r: [-0.2229, 0.6138, 0.7555, 0.0539],
-        s: [1, 1, 1],
-    },
-    {
-        t: [0.0282, -0.0578, -0.1318],
-        r: [-0.2724, 0.6476, 0.7112, 0.0242],
-        s: [1, 1, 1],
-    },
-    {
-        t: [0.0389, -0.0856, -0.1338],
-        r: [-0.2724, 0.6476, 0.7112, 0.0242],
-        s: [1, 1, 1],
-    },
-    {
-        t: [0.0046, 0.0177, -0.0997],
-        r: [0.1919, -0.3993, -0.6438, 0.6238],
-        s: [1, 1, 1],
-    },
-    {
-        t: [0.0618, -34e-4, -0.1463],
-        r: [-0.1884, 0.0883, -0.6795, 0.7035],
-        s: [1, 1, 1],
-    },
-    {
-        t: [0.0481, -93e-4, -0.1821],
-        r: [0.6204, -0.5352, 0.4297, -0.3794],
-        s: [1, 1, 1],
-    },
-    {
-        t: [0.0275, -94e-4, -0.1746],
-        r: [0.6806, -0.6532, 0.2814, -0.176],
-        s: [1, 1, 1],
-    },
-    {
-        t: [0.0141, -64e-4, -0.1561],
-        r: [0.6806, -0.6532, 0.2814, -0.176],
-        s: [1, 1, 1],
-    },
-    {
-        t: [0.0062, 0.0299, -0.1019],
-        r: [0.2399, -0.3631, -0.598, 0.6731],
-        s: [1, 1, 1],
-    },
-    {
-        t: [0.0621, 0.0218, -0.1466],
-        r: [-0.241, 0.1225, -0.6156, 0.7403],
-        s: [1, 1, 1],
-    },
-    {
-        t: [0.0427, 0.0133, -0.1823],
-        r: [0.7097, -0.4862, 0.373, -0.3475],
-        s: [1, 1, 1],
-    },
-    {
-        t: [0.0165, 0.0095, -0.1681],
-        r: [0.7968, -0.5892, 0.1321, -0.0209],
-        s: [1, 1, 1],
-    },
-    {
-        t: [0.0119, 0.0128, -0.1447],
-        r: [0.7968, -0.5892, 0.1321, -0.0209],
-        s: [1, 1, 1],
-    },
-    {
-        t: [0.0033, 0.0406, -0.1037],
-        r: [0.2574, -0.3085, -0.5681, 0.7183],
-        s: [1, 1, 1],
-    },
-    {
-        t: [0.052, 0.0419, -0.1485],
-        r: [-0.2306, 0.1278, -0.5499, 0.7925],
-        s: [1, 1, 1],
-    },
-    {
-        t: [0.0339, 0.0328, -0.182],
-        r: [0.7575, -0.4754, 0.2861, -0.344],
-        s: [1, 1, 1],
-    },
-    {
-        t: [0.0099, 0.025, -0.1634],
-        r: [0.843, -0.5293, 0.0926, -0.0248],
-        s: [1, 1, 1],
-    },
-    {
-        t: [0.0068, 0.0266, -0.142],
-        r: [0.843, -0.5293, 0.0926, -0.0248],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-18e-4, 0.0508, -0.104],
-        r: [0.2798, -0.2351, -0.5355, 0.7614],
-        s: [1, 1, 1],
-    },
-    {
-        t: [0.0378, 0.0613, -0.1483],
-        r: [-0.1652, 0.0952, -0.5046, 0.842],
-        s: [1, 1, 1],
-    },
-    {
-        t: [0.0259, 0.054, -0.1792],
-        r: [0.7429, -0.4404, 0.2677, -0.4273],
-        s: [1, 1, 1],
-    },
-    {
-        t: [0.0084, 0.0449, -0.169],
-        r: [0.8704, -0.4542, 0.1121, -0.1532],
-        s: [1, 1, 1],
-    },
-    {
-        t: [0.002, 0.0431, -0.1514],
-        r: [0.8704, -0.4542, 0.1121, -0.1532],
-        s: [1, 1, 1],
-    },
-];
-const RIGHT_HAND_THUMBS_DOWN = [
-    {
-        t: [0.0237, 0.033, -0.083],
-        r: [0.325, 0.2979, 0.5612, 0.7004],
-        s: [1, 1, 1],
-    },
-    {
-        t: [0.0039, 0.0142, -0.1018],
-        r: [0.0744, 0.4501, 0.7672, 0.4508],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-0.0239, -0.0191, -0.133],
-        r: [0.2089, 0.5732, 0.7915, 0.0363],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-0.0341, -0.0435, -0.1401],
-        r: [0.2664, 0.6251, 0.7316, 0.0555],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-0.0476, -0.0698, -0.144],
-        r: [0.2664, 0.6251, 0.7316, 0.0555],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-3e-4, 0.0251, -0.0989],
-        r: [0.2488, 0.3591, 0.5717, 0.6944],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-0.0603, 0.0201, -0.1463],
-        r: [-0.2217, -0.1036, 0.5936, 0.7667],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-0.045, 0.0116, -0.1809],
-        r: [0.681, 0.4806, -0.3657, -0.4143],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-0.0253, 0.0071, -0.1724],
-        r: [0.7487, 0.5817, -0.2444, -0.2032],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-0.0121, 0.0068, -0.1535],
-        r: [0.7487, 0.5817, -0.2444, -0.2032],
-        s: [1, 1, 1],
-    },
-    {
-        t: [0.001, 0.0374, -0.1005],
-        r: [0.2971, 0.3158, 0.527, 0.7309],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-0.0548, 0.0447, -0.1454],
-        r: [-0.2475, -0.1117, 0.5236, 0.8076],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-0.0369, 0.0331, -0.181],
-        r: [0.759, 0.413, -0.3155, -0.3922],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-0.0126, 0.0231, -0.1665],
-        r: [0.8595, 0.4988, -0.1065, -0.0339],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-84e-4, 0.0248, -0.1428],
-        r: [0.8595, 0.4988, -0.1065, -0.0339],
-        s: [1, 1, 1],
-    },
-    {
-        t: [0.0064, 0.0472, -0.1018],
-        r: [0.3122, 0.2567, 0.4998, 0.766],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-0.0402, 0.0619, -0.1463],
-        r: [-0.22, -0.1072, 0.4537, 0.8569],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-0.025, 0.0506, -0.1806],
-        r: [0.8003, 0.3914, -0.2353, -0.3886],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-35e-4, 0.0369, -0.1624],
-        r: [0.8979, 0.4322, -0.0728, -0.0395],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-8e-4, 0.0373, -0.1409],
-        r: [0.8979, 0.4322, -0.0728, -0.0395],
-        s: [1, 1, 1],
-    },
-    {
-        t: [0.0136, 0.0558, -0.1017],
-        r: [0.3278, 0.1772, 0.4672, 0.8018],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-0.0219, 0.0775, -0.1452],
-        r: [-0.1811, -0.0932, 0.4016, 0.8929],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-0.0108, 0.0677, -0.1758],
-        r: [0.7842, 0.3582, -0.2073, -0.4623],
-        s: [1, 1, 1],
-    },
-    {
-        t: [0.004, 0.0547, -0.1656],
-        r: [0.9158, 0.3542, -0.0821, -0.1706],
-        s: [1, 1, 1],
-    },
-    {
-        t: [0.0096, 0.0511, -0.1481],
-        r: [0.9158, 0.3542, -0.0821, -0.1706],
-        s: [1, 1, 1],
-    },
-];
+const HAND_JOINT_PARENT = {
+    'thumb-metacarpal': 'wrist',
+    'thumb-phalanx-proximal': 'thumb-metacarpal',
+    'thumb-phalanx-distal': 'thumb-phalanx-proximal',
+    'thumb-tip': 'thumb-phalanx-distal',
+    'index-finger-metacarpal': 'wrist',
+    'index-finger-phalanx-proximal': 'index-finger-metacarpal',
+    'index-finger-phalanx-intermediate': 'index-finger-phalanx-proximal',
+    'index-finger-phalanx-distal': 'index-finger-phalanx-intermediate',
+    'index-finger-tip': 'index-finger-phalanx-distal',
+    'middle-finger-metacarpal': 'wrist',
+    'middle-finger-phalanx-proximal': 'middle-finger-metacarpal',
+    'middle-finger-phalanx-intermediate': 'middle-finger-phalanx-proximal',
+    'middle-finger-phalanx-distal': 'middle-finger-phalanx-intermediate',
+    'middle-finger-tip': 'middle-finger-phalanx-distal',
+    'ring-finger-metacarpal': 'wrist',
+    'ring-finger-phalanx-proximal': 'ring-finger-metacarpal',
+    'ring-finger-phalanx-intermediate': 'ring-finger-phalanx-proximal',
+    'ring-finger-phalanx-distal': 'ring-finger-phalanx-intermediate',
+    'ring-finger-tip': 'ring-finger-phalanx-distal',
+    'pinky-finger-metacarpal': 'wrist',
+    'pinky-finger-phalanx-proximal': 'pinky-finger-metacarpal',
+    'pinky-finger-phalanx-intermediate': 'pinky-finger-phalanx-proximal',
+    'pinky-finger-phalanx-distal': 'pinky-finger-phalanx-intermediate',
+    'pinky-finger-tip': 'pinky-finger-phalanx-distal',
+};
+function createRestJoints(joints) {
+    const restJoints = new Map();
+    HAND_JOINT_NAMES.forEach((jointName, index) => {
+        const joint = joints[index];
+        const position = new THREE.Vector3(joint.t[0], joint.t[1], joint.t[2]);
+        const rotation = new THREE.Quaternion(joint.r[0], joint.r[1], joint.r[2], joint.r[3]);
+        const parentName = HAND_JOINT_PARENT[jointName];
+        if (!parentName) {
+            restJoints.set(jointName, {
+                position,
+                rotation,
+                localOffset: position.clone(),
+                localRotation: rotation.clone(),
+            });
+            return;
+        }
+        const parentRestJoint = restJoints.get(parentName);
+        const inverseParentRotation = parentRestJoint.rotation.clone().invert();
+        const localOffset = position
+            .clone()
+            .sub(parentRestJoint.position)
+            .applyQuaternion(inverseParentRotation);
+        const localRotation = parentRestJoint.rotation
+            .clone()
+            .invert()
+            .multiply(rotation);
+        restJoints.set(jointName, {
+            position,
+            rotation,
+            localOffset,
+            localRotation,
+        });
+    });
+    return restJoints;
+}
+const LEFT_REST_JOINTS = createRestJoints(LEFT_HAND_NEUTRAL);
+const RIGHT_REST_JOINTS = createRestJoints(RIGHT_HAND_NEUTRAL);
+const RAD_TO_DEG = 180 / Math.PI;
+const DEG_TO_RAD = Math.PI / 180;
+function clamp(value, min, max) {
+    return Math.min(max, Math.max(min, value));
+}
+function applySimulatorHandPoseRotationConstraints(rotations) {
+    const constrainedRotations = {};
+    for (const [jointName, rotation] of Object.entries(rotations)) {
+        const jointConstraints = SIMULATOR_HAND_COMMON_BIOMECHANICAL_CONSTRAINTS_DEGREES[jointName];
+        constrainedRotations[jointName] = rotation.map((axisValue, axisIndex) => {
+            const axisConstraints = jointConstraints?.[axisIndex];
+            if (!axisConstraints)
+                return axisValue;
+            const [minDegrees, maxDegrees] = axisConstraints;
+            return (clamp(axisValue * RAD_TO_DEG, minDegrees, maxDegrees) * DEG_TO_RAD);
+        });
+    }
+    return constrainedRotations;
+}
+// conversion into the neutral hand pose standard
+// TODO: could directly encode these into the actual quaternions
+function getRawFKRotation(jointName, rotation = [0, 0, 0]) {
+    const [x, y, z] = rotation;
+    if (jointName === 'thumb-metacarpal') {
+        return [y, x, -z];
+    }
+    if (jointName.startsWith('thumb-')) {
+        return [-x, -y, -z];
+    }
+    if (jointName.startsWith('index-finger-') ||
+        jointName.startsWith('middle-finger-')) {
+        return [-x, -y, z];
+    }
+    return [-x, y, z];
+}
+function getHandednessRotation(handedness, rotation) {
+    if (handedness !== Handedness.RIGHT) {
+        return rotation;
+    }
+    return [rotation[0], -rotation[1], -rotation[2]];
+}
+// apply constraints applies a biomechanical constraint onto hand pose rotations
+function resolveHandPoseRotations(handedness, restJoints, rotations, applyConstraints = false) {
+    const finalPositions = new Map();
+    const finalRotations = new Map();
+    const resolvedJoints = [];
+    const resolvedRotations = applyConstraints
+        ? applySimulatorHandPoseRotationConstraints(rotations)
+        : rotations;
+    for (const jointName of HAND_JOINT_NAMES) {
+        const restJoint = restJoints.get(jointName);
+        const rawRotation = getRawFKRotation(jointName, resolvedRotations[jointName]);
+        const rotation = getHandednessRotation(handedness, rawRotation);
+        const offsetRotation = new THREE.Quaternion().setFromEuler(new THREE.Euler(rotation[0], rotation[1], rotation[2], 'XYZ'));
+        const parentName = HAND_JOINT_PARENT[jointName];
+        if (!parentName) {
+            const finalPosition = restJoint.position.clone();
+            const finalRotation = restJoint.rotation.clone().multiply(offsetRotation);
+            finalPositions.set(jointName, finalPosition);
+            finalRotations.set(jointName, finalRotation);
+            resolvedJoints.push({
+                t: finalPosition.toArray(),
+                r: finalRotation.toArray(),
+                s: [1, 1, 1],
+            });
+            continue;
+        }
+        const parentPosition = finalPositions.get(parentName);
+        const parentRotation = finalRotations.get(parentName);
+        const finalPosition = restJoint.localOffset
+            .clone()
+            .applyQuaternion(parentRotation)
+            .add(parentPosition);
+        const finalRotation = parentRotation
+            .clone()
+            .multiply(restJoint.localRotation)
+            .multiply(offsetRotation);
+        finalPositions.set(jointName, finalPosition);
+        finalRotations.set(jointName, finalRotation);
+        resolvedJoints.push({
+            t: finalPosition.toArray(),
+            r: finalRotation.toArray(),
+            s: [1, 1, 1],
+        });
+    }
+    return resolvedJoints;
+}
+function resolveSimulatorHandPoseRotations(handedness, rotations, applyConstraints = false) {
+    return resolveHandPoseRotations(handedness, handedness === Handedness.LEFT ? LEFT_REST_JOINTS : RIGHT_REST_JOINTS, rotations, applyConstraints);
+}
 
-const LEFT_HAND_THUMBS_UP = [
-    { t: [-0.011, -0.0299, -0.0701], r: [0.1224, -0.1562, 0.6052, 0.771] },
-    { t: [0.0025, -17e-4, -0.0854], r: [0.3796, -0.3776, 0.3843, 0.7521] },
-    { t: [0.0162, 0.041, -0.1065], r: [0.6152, -0.1749, 0.0935, 0.763] },
-    { t: [0.0204, 0.0676, -0.1116], r: [0.5992, -0.1247, 0.1335, 0.7795] },
-    { t: [0.0225, 0.096, -0.1202], r: [0.5992, -0.1247, 0.1335, 0.7795] },
-    { t: [-42e-4, -8e-3, -0.0928], r: [0.1427, -0.2467, 0.6763, 0.6793] },
-    { t: [0.0063, 0.0312, -0.155], r: [-0.4551, -0.5645, 0.3425, 0.5974] },
-    { t: [0.0447, 0.0257, -0.1538], r: [0.7509, 0.6277, 0.1981, -0.053] },
-    { t: [0.0396, 0.0184, -0.1338], r: [0.7246, 0.5124, 0.4244, 0.1797] },
-    { t: [0.0207, 0.0148, -0.1212], r: [0.7246, 0.5124, 0.4244, 0.1797] },
-    { t: [-78e-4, -0.0192, -0.0982], r: [0.109, -0.1737, 0.6698, 0.7137] },
-    { t: [-6e-4, 0.0083, -0.163], r: [-0.4929, -0.5301, 0.4215, 0.5462] },
-    { t: [0.0407, 0.0046, -0.1614], r: [0.705, 0.703, 0.0897, -0.0263] },
-    { t: [0.0382, -5e-4, -0.132], r: [0.6279, 0.5816, 0.4074, 0.3186] },
-    { t: [0.0165, -21e-4, -0.1217], r: [0.6279, 0.5816, 0.4074, 0.3186] },
-    { t: [-92e-4, -0.031, -0.0993], r: [0.0472, -0.1416, 0.6514, 0.7439] },
-    { t: [0.0006, -0.0142, -0.1626], r: [-0.5202, -0.4929, 0.4819, 0.5042] },
-    { t: [0.0398, -0.0159, -0.1611], r: [0.6996, 0.7076, 0.0706, 0.0696] },
-    { t: [0.0338, -0.0161, -0.1304], r: [0.5876, 0.6289, 0.3607, 0.3593] },
-    { t: [0.0143, -0.0168, -0.1208], r: [0.5876, 0.6289, 0.3607, 0.3593] },
-    { t: [-81e-4, -0.0426, -0.0982], r: [-0.0269, -0.0934, 0.6476, 0.7558] },
-    { t: [0.0026, -0.0377, -0.1578], r: [0.5435, 0.4612, -0.5243, -0.4658] },
-    { t: [0.0366, -0.0376, -0.1559], r: [0.6991, 0.7017, 0.0384, 0.1318] },
-    { t: [0.032, -0.0347, -0.1344], r: [0.575, 0.6796, 0.2522, 0.3795] },
-    { t: [0.0166, -0.0342, -0.1237], r: [0.575, 0.6796, 0.2522, 0.3795] },
-];
-const RIGHT_HAND_THUMBS_UP = [
-    { t: [0.0317, -0.0212, -0.089], r: [0.2199, 0.1003, -0.594, 0.7673] },
-    { t: [0.0223, 0.009, -0.1042], r: [0.4294, 0.285, -0.3619, 0.7768] },
-    { t: [0.0158, 0.0521, -0.1273], r: [0.6012, 0.067, -0.0513, 0.7947] },
-    { t: [0.0145, 0.0784, -0.1348], r: [0.597, 0.0134, -0.0918, 0.7968] },
-    { t: [0.0163, 0.1065, -0.1446], r: [0.597, 0.0134, -0.0918, 0.7968] },
-    { t: [0.0303, 0.0032, -0.1103], r: [0.2434, 0.2002, -0.656, 0.6858] },
-    { t: [0.0337, 0.0475, -0.1698], r: [-0.3298, 0.4729, -0.4297, 0.6949] },
-    { t: [-26e-4, 0.0462, -0.1835], r: [0.7134, -0.6368, -2e-4, -0.2925] },
-    { t: [-0.0107, 0.0369, -0.1654], r: [0.7745, -0.5891, -0.2133, -0.0877] },
-    { t: [-47e-4, 0.0282, -0.145], r: [0.7745, -0.5891, -0.2133, -0.0877] },
-    { t: [0.0347, -77e-4, -0.1158], r: [0.2088, 0.1254, -0.6589, 0.7117] },
-    { t: [0.0416, 0.0251, -0.1782], r: [-0.3597, 0.4829, -0.4746, 0.6421] },
-    { t: [0.0018, 0.0251, -0.19], r: [-0.673, 0.7069, -14e-4, 0.2177] },
-    { t: [-77e-4, 0.0162, -0.163], r: [0.6957, -0.6456, -0.2988, 0.0994] },
-    { t: [0.0063, 0.0104, -0.1443], r: [0.6957, -0.6456, -0.2988, 0.0994] },
-    { t: [0.0361, -0.0196, -0.1178], r: [0.1467, 0.0923, -0.6537, 0.7367] },
-    { t: [0.0398, 0.0027, -0.1801], r: [-0.3611, 0.446, -0.5466, 0.6099] },
-    { t: [0.0028, 0.0047, -0.193], r: [-0.6782, 0.7246, -14e-4, 0.1226] },
-    { t: [-3e-3, -6e-4, -0.1628], r: [-0.652, 0.6801, 0.2937, -0.1613] },
-    { t: [0.0108, -46e-4, -0.1465], r: [-0.652, 0.6801, 0.2937, -0.1613] },
-    { t: [0.0343, -0.0315, -0.1182], r: [0.0757, 0.0463, -0.6692, 0.7378] },
-    { t: [0.0363, -0.021, -0.1779], r: [-0.3141, 0.3981, -0.6168, 0.602] },
-    { t: [0.0062, -0.0166, -0.1931], r: [-0.6691, 0.7354, -0.0331, 0.1021] },
-    { t: [0.0012, -0.0185, -0.1716], r: [-0.6175, 0.7316, 0.235, -0.168] },
-    { t: [0.0116, -0.0223, -0.1564], r: [-0.6175, 0.7316, 0.235, -0.168] },
-];
-
-const LEFT_HAND_VICTORY = [
-    {
-        t: [-0.0485, -0.0629, -0.0748],
-        r: [0.5235, 0.0269, -0.0122, 0.8515],
-        s: [1, 1, 1],
+const SIMULATOR_HAND_POSE_ROTATIONS = Object.freeze({
+    [SimulatorHandPose.NEUTRAL]: {
+        wrist: [0, 0, 0],
+        'thumb-metacarpal': [0, 0, 0],
+        'thumb-phalanx-proximal': [0, 0, 0],
+        'thumb-phalanx-distal': [0, 0, 0],
+        'index-finger-metacarpal': [0, 0, 0],
+        'index-finger-phalanx-proximal': [0, 0, 0],
+        'index-finger-phalanx-intermediate': [0, 0, 0],
+        'index-finger-phalanx-distal': [0, 0, 0],
+        'middle-finger-metacarpal': [0, 0, 0],
+        'middle-finger-phalanx-proximal': [0, 0, 0],
+        'middle-finger-phalanx-intermediate': [0, 0, 0],
+        'middle-finger-phalanx-distal': [0, 0, 0],
+        'ring-finger-metacarpal': [0, 0, 0],
+        'ring-finger-phalanx-proximal': [0, 0, 0],
+        'ring-finger-phalanx-intermediate': [0, 0, 0],
+        'ring-finger-phalanx-distal': [0, 0, 0],
+        'pinky-finger-metacarpal': [0, 0, 0],
+        'pinky-finger-phalanx-proximal': [0, 0, 0],
+        'pinky-finger-phalanx-intermediate': [0, 0, 0],
+        'pinky-finger-phalanx-distal': [0, 0, 0],
     },
-    {
-        t: [-0.0274, -0.0424, -0.0935],
-        r: [0.2683, -91e-4, -0.2476, 0.9309],
-        s: [1, 1, 1],
+    [SimulatorHandPose.RELAXED]: {
+        wrist: [0.066528, 0.199494, 0.406252],
+        'thumb-metacarpal': [0.288969, -0.421561, 0.566077],
+        'thumb-phalanx-proximal': [0.314159, 0, 0],
+        'thumb-phalanx-distal': [0, 0, 0],
+        'index-finger-metacarpal': [0, 0, 0],
+        'index-finger-phalanx-proximal': [0.436331, 0, 0],
+        'index-finger-phalanx-intermediate': [0.57596, 0, 0],
+        'index-finger-phalanx-distal': [0.226891, 0, 0],
+        'middle-finger-metacarpal': [0, 0, 0],
+        'middle-finger-phalanx-proximal': [0.157079, 0, 0],
+        'middle-finger-phalanx-intermediate': [0.610866, 0, 0],
+        'middle-finger-phalanx-distal': [0.2618, 0, 0],
+        'ring-finger-metacarpal': [0, 0, 0],
+        'ring-finger-phalanx-proximal': [0, 0, 0],
+        'ring-finger-phalanx-intermediate': [0.610866, 0, 0],
+        'ring-finger-phalanx-distal': [0.261799, 0, 0],
+        'pinky-finger-metacarpal': [0, 0, 0],
+        'pinky-finger-phalanx-proximal': [0, 0, 0],
+        'pinky-finger-phalanx-intermediate': [0.506145, 0, 0],
+        'pinky-finger-phalanx-distal': [0.261799, 0, 0],
     },
-    {
-        t: [-0.0197, -0.0171, -0.1372],
-        r: [-0.0874, 0.2587, -0.5403, 0.7959],
-        s: [1, 1, 1],
+    [SimulatorHandPose.PINCHING]: {
+        wrist: [0.066528, 0.199494, 0.406252],
+        'thumb-metacarpal': [0.672677, -0.541947, 0.45959],
+        'thumb-phalanx-proximal': [0.428777, -0.042223, -2288e-6],
+        'thumb-phalanx-distal': [-0.185089, -7076e-6, -3675e-6],
+        'index-finger-metacarpal': [0.005858, -129e-6, 0.000663],
+        'index-finger-phalanx-proximal': [0.959931, 0.11827, -0.091682],
+        'index-finger-phalanx-intermediate': [0.692695, 0.000662, -369e-6],
+        'index-finger-phalanx-distal': [0.033553, -104e-6, -203e-6],
+        'middle-finger-metacarpal': [0.004162, 0.000012, -278e-5],
+        'middle-finger-phalanx-proximal': [0.151863, 0.088683, 0.002485],
+        'middle-finger-phalanx-intermediate': [0.715085, 0.000293, 0.000308],
+        'middle-finger-phalanx-distal': [0.173078, -105e-6, -133e-6],
+        'ring-finger-metacarpal': [0.001171, 0.000302, -7015e-6],
+        'ring-finger-phalanx-proximal': [-0.037672, -0.115556, 0.033333],
+        'ring-finger-phalanx-intermediate': [0.690004, -103e-6, 0.000208],
+        'ring-finger-phalanx-distal': [0.234816, -133e-6, 0.000076],
+        'pinky-finger-metacarpal': [-2313e-6, 0.000835, -0.011248],
+        'pinky-finger-phalanx-proximal': [0.008876, -0.107748, 0.030917],
+        'pinky-finger-phalanx-intermediate': [0.527087, -118e-6, 0.000211],
+        'pinky-finger-phalanx-distal': [0.279492, 0.000126, 0.000026],
     },
-    {
-        t: [-0.0337, -0.0134, -0.1604],
-        r: [-0.1021, 0.3471, -0.5231, 0.7717],
-        s: [1, 1, 1],
+    [SimulatorHandPose.FIST]: {
+        wrist: [0.718906, -0.420664, 0.506276],
+        'thumb-metacarpal': [0.501474, -0.295042, 0.551349],
+        'thumb-phalanx-proximal': [0.457195, -0.17737, 0.299589],
+        'thumb-phalanx-distal': [0.050138, 0.061422, -0.365074],
+        'index-finger-metacarpal': [0.16857, 0.00471, 0],
+        'index-finger-phalanx-proximal': [1.466077, 0, 0],
+        'index-finger-phalanx-intermediate': [1.413682, -1122e-6, 0.000132],
+        'index-finger-phalanx-distal': [1.256637, -368e-6, 0],
+        'middle-finger-metacarpal': [0.060684, 0.007245, 0],
+        'middle-finger-phalanx-proximal': [1.186824, 0, 0],
+        'middle-finger-phalanx-intermediate': [1.375812, -1242e-6, 0.000057],
+        'middle-finger-phalanx-distal': [1.169371, -647e-6, -158e-6],
+        'ring-finger-metacarpal': [0, 0, 0],
+        'ring-finger-phalanx-proximal': [1.169371, 0, 0],
+        'ring-finger-phalanx-intermediate': [1.330938, 0.001089, -398e-6],
+        'ring-finger-phalanx-distal': [1.343904, 0.00026, -166e-6],
+        'pinky-finger-metacarpal': [-2309e-6, 0, 0],
+        'pinky-finger-phalanx-proximal': [1.256637, 0.000002, 0],
+        'pinky-finger-phalanx-intermediate': [1.389296, 0.000234, -492e-6],
+        'pinky-finger-phalanx-distal': [1.291544, 0.000307, 0.000013],
     },
-    {
-        t: [-0.0538, -84e-4, -0.1819],
-        r: [-0.1021, 0.3471, -0.5231, 0.7717],
-        s: [1, 1, 1],
+    [SimulatorHandPose.THUMBS_UP]: {
+        wrist: [0.704686, -0.201371, 1.791237],
+        'thumb-metacarpal': [0.134051, -0.193436, 0.759515],
+        'thumb-phalanx-proximal': [-0.125664, -0.029745, 0.357544],
+        'thumb-phalanx-distal': [-0.08182, 0.010624, -0.369933],
+        'index-finger-metacarpal': [0.156866, 0.01325, 0.103641],
+        'index-finger-phalanx-proximal': [1.39272, -0.12805, 0.164079],
+        'index-finger-phalanx-intermediate': [1.584616, -124e-5, 0.000347],
+        'index-finger-phalanx-distal': [0.536045, -439e-6, -414e-6],
+        'middle-finger-metacarpal': [0.055222, 0.011182, 0.102008],
+        'middle-finger-phalanx-proximal': [1.326915, -0.138643, 0.126843],
+        'middle-finger-phalanx-intermediate': [1.541392, -1225e-6, 0.000167],
+        'middle-finger-phalanx-distal': [0.707589, -696e-6, -66e-6],
+        'ring-finger-metacarpal': [0.022297, -0.015343, 0.137564],
+        'ring-finger-phalanx-proximal': [1.286056, 0.225023, 0.176957],
+        'ring-finger-phalanx-intermediate': [1.562286, 0.001084, -253e-6],
+        'ring-finger-phalanx-distal': [0.622574, 0.000385, 0.000122],
+        'pinky-finger-metacarpal': [-7839e-6, -0.022999, 0.194136],
+        'pinky-finger-phalanx-proximal': [1.220849, 0.266958, 0.111277],
+        'pinky-finger-phalanx-intermediate': [1.790949, 0.000178, -611e-6],
+        'pinky-finger-phalanx-distal': [0.601801, 0.000321, 0.0003],
     },
-    {
-        t: [-0.0376, -0.037, -0.0897],
-        r: [0.5048, -0.107, 0.0348, 0.8559],
-        s: [1, 1, 1],
+    [SimulatorHandPose.POINTING]: {
+        wrist: [0.596035, -0.414914, 1.043752],
+        'thumb-metacarpal': [0.637297, -0.491225, 0.458936],
+        'thumb-phalanx-proximal': [0.759414, -0.175775, 0.269178],
+        'thumb-phalanx-distal': [0.081354, 0.073188, -0.363034],
+        'index-finger-metacarpal': [0.000001, 0.003655, 0.000013],
+        'index-finger-phalanx-proximal': [-86e-6, -92e-6, 0],
+        'index-finger-phalanx-intermediate': [0, -363e-6, -1156e-6],
+        'index-finger-phalanx-distal': [0, 0.000023, -357e-6],
+        'middle-finger-metacarpal': [0, 0.007851, 0],
+        'middle-finger-phalanx-proximal': [0.944767, -0.158674, 0.038806],
+        'middle-finger-phalanx-intermediate': [1.301244, -1132e-6, -83e-6],
+        'middle-finger-phalanx-distal': [0.429908, -818e-6, -263e-6],
+        'ring-finger-metacarpal': [0.014748, -0.019316, 0.158147],
+        'ring-finger-phalanx-proximal': [1.093878, 0.194757, 0.02078],
+        'ring-finger-phalanx-intermediate': [1.298489, 0.001164, -52e-5],
+        'ring-finger-phalanx-distal': [0.510774, 0.000157, -34e-6],
+        'pinky-finger-metacarpal': [-8366e-6, -0.028749, 0.217979],
+        'pinky-finger-phalanx-proximal': [0.977895, 0.073588, -0.202452],
+        'pinky-finger-phalanx-intermediate': [1.33904, 0.00018, -557e-6],
+        'pinky-finger-phalanx-distal': [0.58579, 0.00031, 0.000028],
     },
-    {
-        t: [-0.0266, 0.0281, -0.1246],
-        r: [0.567, -0.0696, 0.0098, 0.8207],
-        s: [1, 1, 1],
+    [SimulatorHandPose.ROCK]: {
+        wrist: [0.011734, -0.065693, 0.297017],
+        'thumb-metacarpal': [0.785398, -0.750492, 0.575959],
+        'thumb-phalanx-proximal': [0.794647, -0.152901, 0.267991],
+        'thumb-phalanx-distal': [-0.127808, -7272e-6, -0.369855],
+        'index-finger-metacarpal': [0.000008, 0.000002, 0],
+        'index-finger-phalanx-proximal': [0, 0, 0],
+        'index-finger-phalanx-intermediate': [0, -368e-6, -1003e-6],
+        'index-finger-phalanx-distal': [0, -4e-5, -417e-6],
+        'middle-finger-metacarpal': [0.000012, 0, 0],
+        'middle-finger-phalanx-proximal': [0.855211, -0.08504, -9794e-6],
+        'middle-finger-phalanx-intermediate': [1.064651, -1181e-6, -268e-6],
+        'middle-finger-phalanx-distal': [1.500983, 0.000001, -536e-6],
+        'ring-finger-metacarpal': [0.006811, -4e-6, 0],
+        'ring-finger-phalanx-proximal': [0.593412, 0.000002, 0],
+        'ring-finger-phalanx-intermediate': [1.32645, 0.000966, -864e-6],
+        'ring-finger-phalanx-distal': [0.977384, 0.000177, -314e-6],
+        'pinky-finger-metacarpal': [-368e-5, -4e-6, 0],
+        'pinky-finger-phalanx-proximal': [-13e-6, 0.008337, 0],
+        'pinky-finger-phalanx-intermediate': [0, -29e-5, -68e-6],
+        'pinky-finger-phalanx-distal': [0, 0.000287, -171e-6],
     },
-    {
-        t: [-0.0224, 0.0646, -0.1371],
-        r: [0.5031, -0.0677, 0.0059, 0.8615],
-        s: [1, 1, 1],
+    [SimulatorHandPose.THUMBS_DOWN]: {
+        wrist: [0.640485, -1.129773, -0.862294],
+        'thumb-metacarpal': [0.134043, -0.297017, 0.699054],
+        'thumb-phalanx-proximal': [-0.219144, 0.085162, 0.341408],
+        'thumb-phalanx-distal': [-0.182932, -0.028732, -0.368936],
+        'index-finger-metacarpal': [0.179881, 0.01461, -0.081296],
+        'index-finger-phalanx-proximal': [1.094576, -9837e-6, 0.210567],
+        'index-finger-phalanx-intermediate': [1.409529, -1213e-6, 0.000183],
+        'index-finger-phalanx-distal': [0.411586, -133e-6, -362e-6],
+        'middle-finger-metacarpal': [0.067365, 0.01336, 0.042841],
+        'middle-finger-phalanx-proximal': [1.170727, -0.076803, 0.077463],
+        'middle-finger-phalanx-intermediate': [1.482675, -116e-5, 0.000134],
+        'middle-finger-phalanx-distal': [0.578475, -688e-6, -169e-6],
+        'ring-finger-metacarpal': [0.018267, -9114e-6, 0.18615],
+        'ring-finger-phalanx-proximal': [1.141257, 0.264759, 0.083493],
+        'ring-finger-phalanx-intermediate': [1.504595, 0.001183, 0],
+        'ring-finger-phalanx-distal': [0.52937, 0.000492, -155e-6],
+        'pinky-finger-metacarpal': [0.00421, -0.021035, 0.291251],
+        'pinky-finger-phalanx-proximal': [0.905139, 0.318725, -0.069524],
+        'pinky-finger-phalanx-intermediate': [1.693415, 0.000318, -533e-6],
+        'pinky-finger-phalanx-distal': [0.580409, 0.000258, 0.000122],
     },
-    {
-        t: [-0.0201, 0.0836, -0.1477],
-        r: [0.4589, -0.0365, 0.0223, 0.8874],
-        s: [1, 1, 1],
+    [SimulatorHandPose.VICTORY]: {
+        wrist: [0.10923, 0.217352, 0.365586],
+        'thumb-metacarpal': [0.907571, -0.577914, 0.414543],
+        'thumb-phalanx-proximal': [0.931093, -0.18921, 0.243373],
+        'thumb-phalanx-distal': [0.349066, 0.000003, -0.366582],
+        'index-finger-metacarpal': [0, 0, 0],
+        'index-finger-phalanx-proximal': [0, 0.000006, 0],
+        'index-finger-phalanx-intermediate': [0, -334e-6, -981e-6],
+        'index-finger-phalanx-distal': [0, -126e-6, -478e-6],
+        'middle-finger-metacarpal': [0.000003, 0, 0],
+        'middle-finger-phalanx-proximal': [0, -22e-6, 0],
+        'middle-finger-phalanx-intermediate': [0, -308e-6, -1127e-6],
+        'middle-finger-phalanx-distal': [0, -334e-6, -871e-6],
+        'ring-finger-metacarpal': [0.139626, -0.05236, 0.15708],
+        'ring-finger-phalanx-proximal': [0.279253, -12e-6, 0],
+        'ring-finger-phalanx-intermediate': [2.007129, 0.000761, -725e-6],
+        'ring-finger-phalanx-distal': [0.663225, 0.000338, -212e-6],
+        'pinky-finger-metacarpal': [0.157079, -0.087266, 0.191986],
+        'pinky-finger-phalanx-proximal': [0.15708, -0.20944, 0],
+        'pinky-finger-phalanx-intermediate': [2.059489, -263e-6, -474e-6],
+        'pinky-finger-phalanx-distal': [0.977384, 0.000422, 0.000077],
     },
-    {
-        t: [-0.019, 0.1018, -0.1617],
-        r: [0.4589, -0.0365, 0.0223, 0.8874],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-0.0503, -0.0361, -0.0891],
-        r: [0.5225, -0.0136, 0.0382, 0.8517],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-0.0515, 0.0267, -0.1211],
-        r: [0.5428, 0.1035, 0.1149, 0.8255],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-0.0638, 0.0631, -0.1369],
-        r: [0.5306, 0.067, 0.0906, 0.8401],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-0.0702, 0.0896, -0.1495],
-        r: [0.5467, 0.0608, 0.081, 0.8312],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-0.0747, 0.1108, -0.1601],
-        r: [0.5467, 0.0608, 0.081, 0.8312],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-0.0613, -0.0396, -0.0891],
-        r: [0.4925, 0.0763, 0.0204, 0.8667],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-0.0712, 0.0158, -0.1219],
-        r: [0.2546, -0.0246, 0.1592, 0.9535],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-0.0722, 0.0349, -0.1561],
-        r: [-0.2354, -0.1181, 0.1042, 0.959],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-0.0638, 0.0217, -0.1832],
-        r: [-0.4573, -0.1496, 0.0503, 0.8752],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-0.0571, 0.0041, -0.1941],
-        r: [-0.4573, -0.1496, 0.0503, 0.8752],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-0.0706, -0.045, -0.0892],
-        r: [0.4433, 0.1733, 0.0233, 0.8791],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-0.0898, 0.0006, -0.1216],
-        r: [0.0458, -0.1976, 0.107, 0.9733],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-0.0762, 0.0038, -0.1526],
-        r: [-0.348, -0.2273, 0.0117, 0.9095],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-0.0668, -95e-4, -0.1675],
-        r: [-0.5475, -0.2656, -0.0806, 0.7894],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-0.0618, -0.0269, -0.1725],
-        r: [-0.5475, -0.2656, -0.0806, 0.7894],
-        s: [1, 1, 1],
-    },
-];
-const RIGHT_HAND_VICTORY = [
-    {
-        t: [-17e-4, -0.0652, -0.0663],
-        r: [0.5651, 0.0392, -0.0573, 0.8221],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-0.0247, -0.042, -0.0786],
-        r: [0.3207, 0.0849, 0.243, 0.9115],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-0.0407, -0.0141, -0.1186],
-        r: [-0.0285, -0.1953, 0.5625, 0.8029],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-0.031, -94e-4, -0.1439],
-        r: [-0.0751, -0.3079, 0.5331, 0.7845],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-0.0133, -43e-4, -0.1673],
-        r: [-0.0751, -0.3079, 0.5331, 0.7845],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-0.0136, -0.0376, -0.076],
-        r: [0.5464, 0.1682, -0.0848, 0.8161],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-0.0272, 0.0313, -0.1019],
-        r: [0.6129, 0.1411, -0.0752, 0.7738],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-0.032, 0.0692, -0.1089],
-        r: [0.5643, 0.143, -0.0679, 0.8103],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-0.0353, 0.0897, -0.1161],
-        r: [0.5256, 0.1162, -0.0834, 0.8386],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-0.038, 0.11, -0.1265],
-        r: [0.5256, 0.1162, -0.0834, 0.8386],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-9e-4, -0.0372, -0.0776],
-        r: [0.5593, 0.0765, -0.0968, 0.8197],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-21e-4, 0.0287, -0.1033],
-        r: [0.6072, -0.0412, -0.1868, 0.7712],
-        s: [1, 1, 1],
-    },
-    {
-        t: [0.01, 0.0671, -0.1136],
-        r: [0.5687, 0.0002, -0.1587, 0.8071],
-        s: [1, 1, 1],
-    },
-    {
-        t: [0.0156, 0.0946, -0.124],
-        r: [0.5609, 0.0092, -0.1498, 0.8142],
-        s: [1, 1, 1],
-    },
-    {
-        t: [0.019, 0.1163, -0.1339],
-        r: [0.5609, 0.0092, -0.1498, 0.8142],
-        s: [1, 1, 1],
-    },
-    {
-        t: [0.0096, -0.0411, -0.08],
-        r: [0.5291, -92e-4, -0.0837, 0.8443],
-        s: [1, 1, 1],
-    },
-    {
-        t: [0.0165, 0.0173, -0.1087],
-        r: [0.2191, 0.1389, -0.1874, 0.9474],
-        s: [1, 1, 1],
-    },
-    {
-        t: [0.009, 0.0353, -0.1427],
-        r: [-0.3548, 0.2386, -0.0503, 0.9026],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-55e-4, 0.0162, -0.1628],
-        r: [-0.5898, 0.2546, 0.0402, 0.7653],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-0.0126, -42e-4, -0.1657],
-        r: [-0.5898, 0.2546, 0.0402, 0.7653],
-        s: [1, 1, 1],
-    },
-    {
-        t: [0.0184, -0.0469, -0.0826],
-        r: [0.4806, -0.0996, -0.0936, 0.8662],
-        s: [1, 1, 1],
-    },
-    {
-        t: [0.034, 0.0014, -0.1134],
-        r: [0.079, 0.2891, -0.1225, 0.9461],
-        s: [1, 1, 1],
-    },
-    {
-        t: [0.0152, 0.0077, -0.141],
-        r: [-0.2784, 0.3171, 0.0012, 0.9066],
-        s: [1, 1, 1],
-    },
-    {
-        t: [0.0023, -29e-4, -0.1556],
-        r: [-0.458, 0.3482, 0.1094, 0.8106],
-        s: [1, 1, 1],
-    },
-    {
-        t: [-53e-4, -0.0187, -0.1623],
-        r: [-0.458, 0.3482, 0.1094, 0.8106],
-        s: [1, 1, 1],
-    },
-];
-
-// Enum of hand poses.
-var SimulatorHandPose;
-(function (SimulatorHandPose) {
-    SimulatorHandPose["RELAXED"] = "relaxed";
-    SimulatorHandPose["PINCHING"] = "pinching";
-    SimulatorHandPose["FIST"] = "fist";
-    SimulatorHandPose["THUMBS_UP"] = "thumbs_up";
-    SimulatorHandPose["POINTING"] = "pointing";
-    SimulatorHandPose["ROCK"] = "rock";
-    SimulatorHandPose["THUMBS_DOWN"] = "thumbs_down";
-    SimulatorHandPose["VICTORY"] = "victory";
-})(SimulatorHandPose || (SimulatorHandPose = {}));
-const SIMULATOR_HAND_POSE_TO_JOINTS_LEFT = Object.freeze({
-    [SimulatorHandPose.RELAXED]: LEFT_HAND_RELAXED,
-    [SimulatorHandPose.PINCHING]: LEFT_HAND_PINCHING,
-    [SimulatorHandPose.FIST]: LEFT_HAND_FIST,
-    [SimulatorHandPose.THUMBS_UP]: LEFT_HAND_THUMBS_UP,
-    [SimulatorHandPose.POINTING]: LEFT_HAND_POINTING,
-    [SimulatorHandPose.ROCK]: LEFT_HAND_ROCK,
-    [SimulatorHandPose.THUMBS_DOWN]: LEFT_HAND_THUMBS_DOWN,
-    [SimulatorHandPose.VICTORY]: LEFT_HAND_VICTORY,
-});
-const SIMULATOR_HAND_POSE_TO_JOINTS_RIGHT = Object.freeze({
-    [SimulatorHandPose.RELAXED]: RIGHT_HAND_RELAXED,
-    [SimulatorHandPose.PINCHING]: RIGHT_HAND_PINCHING,
-    [SimulatorHandPose.FIST]: RIGHT_HAND_FIST,
-    [SimulatorHandPose.THUMBS_UP]: RIGHT_HAND_THUMBS_UP,
-    [SimulatorHandPose.POINTING]: RIGHT_HAND_POINTING,
-    [SimulatorHandPose.ROCK]: RIGHT_HAND_ROCK,
-    [SimulatorHandPose.THUMBS_DOWN]: RIGHT_HAND_THUMBS_DOWN,
-    [SimulatorHandPose.VICTORY]: RIGHT_HAND_VICTORY,
-});
-const SIMULATOR_HAND_POSE_NAMES = Object.freeze({
-    [SimulatorHandPose.RELAXED]: 'Relaxed',
-    [SimulatorHandPose.PINCHING]: 'Pinching',
-    [SimulatorHandPose.FIST]: 'Fist',
-    [SimulatorHandPose.THUMBS_UP]: 'Thumbs Up',
-    [SimulatorHandPose.POINTING]: 'Pointing',
-    [SimulatorHandPose.ROCK]: 'Rock',
-    [SimulatorHandPose.THUMBS_DOWN]: 'Thumbs Down',
-    [SimulatorHandPose.VICTORY]: 'Victory',
 });
 
 class SimulatorXRHand {
@@ -10065,6 +10970,49 @@ class SimulatorXRHand {
 const DEFAULT_HAND_PROFILE_PATH = 'https://cdn.jsdelivr.net/npm/@webxr-input-profiles/assets@1.0/dist/profiles/generic-hand/';
 const vector3$4 = new THREE.Vector3();
 const quaternion$1 = new THREE.Quaternion();
+const ROTATION_JOINT_NAMES = HAND_JOINT_NAMES.filter((jointName) => !jointName.endsWith('-tip'));
+function cloneHandPoseRotations(rotations) {
+    const clonedRotations = {};
+    for (const jointName of ROTATION_JOINT_NAMES) {
+        const rotation = rotations[jointName];
+        if (!rotation)
+            continue;
+        clonedRotations[jointName] = [rotation[0], rotation[1], rotation[2]];
+    }
+    return clonedRotations;
+}
+function lerpHandPoseRotations(currentRotations, targetRotations, lerpSpeed) {
+    for (const jointName of ROTATION_JOINT_NAMES) {
+        const currentRotation = currentRotations[jointName] ?? (currentRotations[jointName] = [0, 0, 0]);
+        const targetRotation = targetRotations[jointName] ?? [0, 0, 0];
+        currentRotation[0] += (targetRotation[0] - currentRotation[0]) * lerpSpeed;
+        currentRotation[1] += (targetRotation[1] - currentRotation[1]) * lerpSpeed;
+        currentRotation[2] += (targetRotation[2] - currentRotation[2]) * lerpSpeed;
+    }
+}
+function applyHandJoints(bones, joints) {
+    for (let i = 0; i < bones.length; i++) {
+        const bone = bones[i];
+        const jointData = joints[i];
+        if (!bone || !jointData)
+            continue;
+        bone.position.fromArray(jointData.t);
+        bone.quaternion.fromArray(jointData.r);
+        bone.scale.fromArray([1, 1, 1]);
+    }
+}
+function lerpHandJoints(bones, joints, lerpSpeed) {
+    for (let i = 0; i < bones.length; i++) {
+        const bone = bones[i];
+        const targetJoint = joints[i];
+        if (!bone || !targetJoint)
+            continue;
+        vector3$4.fromArray(targetJoint.t);
+        quaternion$1.fromArray(targetJoint.r);
+        bone.position.lerp(vector3$4, lerpSpeed);
+        bone.quaternion.slerp(quaternion$1, lerpSpeed);
+    }
+}
 class SimulatorHands {
     constructor(simulatorControllerState, simulatorScene) {
         this.simulatorControllerState = simulatorControllerState;
@@ -10075,12 +11023,24 @@ class SimulatorHands {
         this.rightHandBones = [];
         this.leftHandPose = SimulatorHandPose.RELAXED;
         this.rightHandPose = SimulatorHandPose.RELAXED;
-        this.leftHandTargetJoints = SIMULATOR_HAND_POSE_TO_JOINTS_LEFT[SimulatorHandPose.RELAXED];
-        this.rightHandTargetJoints = SIMULATOR_HAND_POSE_TO_JOINTS_RIGHT[SimulatorHandPose.RELAXED];
+        this.leftHandCurrentRotations = cloneHandPoseRotations(SIMULATOR_HAND_POSE_ROTATIONS[SimulatorHandPose.RELAXED]);
+        this.rightHandCurrentRotations = cloneHandPoseRotations(SIMULATOR_HAND_POSE_ROTATIONS[SimulatorHandPose.RELAXED]);
+        this.leftHandTargetRotations = cloneHandPoseRotations(SIMULATOR_HAND_POSE_ROTATIONS[SimulatorHandPose.RELAXED]);
+        this.rightHandTargetRotations = cloneHandPoseRotations(SIMULATOR_HAND_POSE_ROTATIONS[SimulatorHandPose.RELAXED]);
         this.lerpSpeed = 0.1;
-        this.onHandPoseChangeRequestBound = this.onHandPoseChangeRequest.bind(this);
         this.leftXRHand = new SimulatorXRHand();
         this.rightXRHand = new SimulatorXRHand();
+        this.onHandPoseChangeRequest = (event) => {
+            if (event.type != SimulatorHandPoseChangeRequestEvent.type)
+                return;
+            const handPoseChangeEvent = event;
+            if (this.simulatorControllerState.currentControllerIndex === 0) {
+                this.setLeftHandLerpPose(handPoseChangeEvent.pose);
+            }
+            else {
+                this.setRightHandLerpPose(handPoseChangeEvent.pose);
+            }
+        };
     }
     /**
      * Initialize Simulator Hands.
@@ -10106,7 +11066,7 @@ class SimulatorHands {
                     console.warn(`Couldn't find ${jointName} in left hand mesh`);
                 }
             });
-            this.setLeftHandJoints(this.leftHandTargetJoints);
+            applyHandJoints(this.leftHandBones, resolveSimulatorHandPoseRotations(Handedness.LEFT, this.leftHandCurrentRotations));
             this.input.hands[0]?.dispatchEvent?.({
                 type: 'connected',
                 data: { hand: this.leftXRHand, handedness: 'left' },
@@ -10124,7 +11084,7 @@ class SimulatorHands {
                     console.warn(`Couldn't find ${jointName} in right hand mesh`);
                 }
             });
-            this.setRightHandJoints(this.rightHandTargetJoints);
+            applyHandJoints(this.rightHandBones, resolveSimulatorHandPoseRotations(Handedness.RIGHT, this.rightHandCurrentRotations));
             this.input.hands[1]?.dispatchEvent?.({
                 type: 'connected',
                 data: { hand: this.rightXRHand, handedness: 'right' },
@@ -10132,9 +11092,8 @@ class SimulatorHands {
         });
     }
     setLeftHandLerpPose(pose) {
-        if (this.leftHandPose === pose)
-            return;
-        if (pose === SimulatorHandPose.PINCHING) {
+        if (this.leftHandPose !== SimulatorHandPose.PINCHING &&
+            pose === SimulatorHandPose.PINCHING) {
             this.input.dispatchEvent({
                 type: 'selectstart',
                 target: this.input.controllers[0],
@@ -10143,7 +11102,8 @@ class SimulatorHands {
                 },
             });
         }
-        else if (this.leftHandPose === SimulatorHandPose.PINCHING) {
+        else if (this.leftHandPose === SimulatorHandPose.PINCHING &&
+            pose !== SimulatorHandPose.PINCHING) {
             this.input.dispatchEvent({
                 type: 'selectend',
                 target: this.input.controllers[0],
@@ -10153,13 +11113,13 @@ class SimulatorHands {
             });
         }
         this.leftHandPose = pose;
-        this.leftHandTargetJoints = SIMULATOR_HAND_POSE_TO_JOINTS_LEFT[pose];
+        this.leftHandRawTargetJoints = undefined;
+        this.leftHandTargetRotations = cloneHandPoseRotations(SIMULATOR_HAND_POSE_ROTATIONS[pose]);
         this.updateHandPosePanel();
     }
     setRightHandLerpPose(pose) {
-        if (this.rightHandPose === pose)
-            return;
-        if (pose === SimulatorHandPose.PINCHING) {
+        if (this.rightHandPose !== SimulatorHandPose.PINCHING &&
+            pose === SimulatorHandPose.PINCHING) {
             this.input.dispatchEvent({
                 type: 'selectstart',
                 target: this.input.controllers[1],
@@ -10168,7 +11128,8 @@ class SimulatorHands {
                 },
             });
         }
-        else if (this.rightHandPose === SimulatorHandPose.PINCHING) {
+        else if (this.rightHandPose === SimulatorHandPose.PINCHING &&
+            pose !== SimulatorHandPose.PINCHING) {
             this.input.dispatchEvent({
                 type: 'selectend',
                 target: this.input.controllers[1],
@@ -10178,7 +11139,44 @@ class SimulatorHands {
             });
         }
         this.rightHandPose = pose;
-        this.rightHandTargetJoints = SIMULATOR_HAND_POSE_TO_JOINTS_RIGHT[pose];
+        this.rightHandRawTargetJoints = undefined;
+        this.rightHandTargetRotations = cloneHandPoseRotations(SIMULATOR_HAND_POSE_ROTATIONS[pose]);
+        this.updateHandPosePanel();
+    }
+    /** Applies semantic biomechanical rotations from SimulatorHandPoseRotations. */
+    setLeftHandRotations(rotations, applyConstraints = false) {
+        if (this.leftHandPose === SimulatorHandPose.PINCHING) {
+            this.input.dispatchEvent({
+                type: 'selectend',
+                target: this.input.controllers[0],
+                data: {
+                    handedness: 'left',
+                },
+            });
+        }
+        this.leftHandPose = undefined;
+        this.leftHandRawTargetJoints = undefined;
+        this.leftHandTargetRotations = cloneHandPoseRotations(applyConstraints
+            ? applySimulatorHandPoseRotationConstraints(rotations)
+            : rotations);
+        this.updateHandPosePanel();
+    }
+    /** Applies semantic biomechanical rotations from SimulatorHandPoseRotations. */
+    setRightHandRotations(rotations, applyConstraints = false) {
+        if (this.rightHandPose === SimulatorHandPose.PINCHING) {
+            this.input.dispatchEvent({
+                type: 'selectend',
+                target: this.input.controllers[1],
+                data: {
+                    handedness: 'right',
+                },
+            });
+        }
+        this.rightHandPose = undefined;
+        this.rightHandRawTargetJoints = undefined;
+        this.rightHandTargetRotations = cloneHandPoseRotations(applyConstraints
+            ? applySimulatorHandPoseRotationConstraints(rotations)
+            : rotations);
         this.updateHandPosePanel();
     }
     setLeftHandJoints(joints) {
@@ -10192,19 +11190,9 @@ class SimulatorHands {
                 },
             });
         }
-        if (joints != this.leftHandTargetJoints) {
-            this.leftHandPose = undefined;
-            this.leftHandTargetJoints = joints;
-        }
-        for (let i = 0; i < this.leftHandBones.length; i++) {
-            const bone = this.leftHandBones[i];
-            const jointData = joints[i];
-            if (bone && jointData) {
-                bone.position.fromArray(jointData.t);
-                bone.quaternion.fromArray(jointData.r);
-                bone.scale.fromArray([1, 1, 1]);
-            }
-        }
+        this.leftHandPose = undefined;
+        this.leftHandRawTargetJoints = joints;
+        applyHandJoints(this.leftHandBones, joints);
     }
     setRightHandJoints(joints) {
         // Unset the pose if the joints are manually defined.
@@ -10217,19 +11205,9 @@ class SimulatorHands {
                 },
             });
         }
-        if (joints != this.rightHandTargetJoints) {
-            this.rightHandPose = undefined;
-            this.rightHandTargetJoints = joints;
-        }
-        for (let i = 0; i < this.rightHandBones.length; i++) {
-            const bone = this.rightHandBones[i];
-            const jointData = joints[i];
-            if (bone && jointData) {
-                bone.position.fromArray(jointData.t);
-                bone.quaternion.fromArray(jointData.r);
-                bone.scale.fromArray([1, 1, 1]);
-            }
-        }
+        this.rightHandPose = undefined;
+        this.rightHandRawTargetJoints = joints;
+        applyHandJoints(this.rightHandBones, joints);
     }
     update() {
         this.lerpLeftHandPose();
@@ -10237,28 +11215,20 @@ class SimulatorHands {
         this.syncHandJoints();
     }
     lerpLeftHandPose() {
-        for (let i = 0; i < this.leftHandBones.length; i++) {
-            const bone = this.leftHandBones[i];
-            const targetJoint = this.leftHandTargetJoints[i];
-            if (bone && targetJoint) {
-                vector3$4.fromArray(targetJoint.t);
-                quaternion$1.fromArray(targetJoint.r);
-                bone.position.lerp(vector3$4, this.lerpSpeed);
-                bone.quaternion.slerp(quaternion$1, this.lerpSpeed);
-            }
+        if (this.leftHandRawTargetJoints) {
+            lerpHandJoints(this.leftHandBones, this.leftHandRawTargetJoints, this.lerpSpeed);
+            return;
         }
+        lerpHandPoseRotations(this.leftHandCurrentRotations, this.leftHandTargetRotations, this.lerpSpeed);
+        applyHandJoints(this.leftHandBones, resolveSimulatorHandPoseRotations(Handedness.LEFT, this.leftHandCurrentRotations));
     }
     lerpRightHandPose() {
-        for (let i = 0; i < this.rightHandBones.length; i++) {
-            const bone = this.rightHandBones[i];
-            const targetJoint = this.rightHandTargetJoints[i];
-            if (bone && targetJoint) {
-                vector3$4.fromArray(targetJoint.t);
-                quaternion$1.fromArray(targetJoint.r);
-                bone.position.lerp(vector3$4, this.lerpSpeed);
-                bone.quaternion.slerp(quaternion$1, this.lerpSpeed);
-            }
+        if (this.rightHandRawTargetJoints) {
+            lerpHandJoints(this.rightHandBones, this.rightHandRawTargetJoints, this.lerpSpeed);
+            return;
         }
+        lerpHandPoseRotations(this.rightHandCurrentRotations, this.rightHandTargetRotations, this.lerpSpeed);
+        applyHandJoints(this.rightHandBones, resolveSimulatorHandPoseRotations(Handedness.RIGHT, this.rightHandCurrentRotations));
     }
     syncHandJoints() {
         const hands = this.input.hands;
@@ -10333,30 +11303,52 @@ class SimulatorHands {
     }
     setHandPosePanelElement(element) {
         if (this.handPosePanelElement) {
-            this.handPosePanelElement.removeEventListener(SimulatorHandPoseChangeRequestEvent.type, this.onHandPoseChangeRequestBound);
+            this.handPosePanelElement.removeEventListener(SimulatorHandPoseChangeRequestEvent.type, this.onHandPoseChangeRequest);
         }
-        element.addEventListener(SimulatorHandPoseChangeRequestEvent.type, this.onHandPoseChangeRequestBound);
+        element.addEventListener(SimulatorHandPoseChangeRequestEvent.type, this.onHandPoseChangeRequest);
         this.handPosePanelElement = element;
         this.updateHandPosePanel();
-    }
-    onHandPoseChangeRequest(event) {
-        if (event.type != SimulatorHandPoseChangeRequestEvent.type)
-            return;
-        const handPoseChangeEvent = event;
-        if (this.simulatorControllerState.currentControllerIndex === 0) {
-            this.setLeftHandLerpPose(handPoseChangeEvent.pose);
-        }
-        else {
-            this.setRightHandLerpPose(handPoseChangeEvent.pose);
-        }
     }
     toggleHandedness() {
         this.simulatorControllerState.currentControllerIndex =
             (this.simulatorControllerState.currentControllerIndex + 1) % 2;
         this.updateHandPosePanel();
+        this.onHandednessChanged?.(this.simulatorControllerState.currentControllerIndex === 0
+            ? 'left'
+            : 'right');
     }
 }
 
+class SetSimulatorEnvironmentEvent extends Event {
+    static { this.type = 'setSimulatorEnvironment'; }
+    constructor(environmentIndex) {
+        super(SetSimulatorEnvironmentEvent.type, { bubbles: true, composed: true });
+        this.environmentIndex = environmentIndex;
+    }
+}
+
+/** Standard gamepad button names for display. */
+const BUTTON_NAMES = {
+    0: 'A',
+    1: 'B',
+    2: 'X',
+    3: 'Y',
+    4: 'LB',
+    5: 'RB',
+    6: 'LT',
+    7: 'RT',
+    8: 'Back',
+    9: 'Start',
+    10: 'L3',
+    11: 'R3',
+    12: 'D-Up',
+    13: 'D-Down',
+    14: 'D-Left',
+    15: 'D-Right',
+};
+function btnName(index) {
+    return BUTTON_NAMES[index] ?? `Btn ${index}`;
+}
 class SimulatorInterface {
     constructor() {
         this.elements = [];
@@ -10365,18 +11357,35 @@ class SimulatorInterface {
     /**
      * Initialize the simulator interface.
      */
-    init(simulatorOptions, simulatorControls, simulatorHands) {
-        this.createModeIndicator(simulatorOptions, simulatorControls);
+    init(simulatorOptions, simulatorControls, simulatorHands, input, simulatorScene) {
+        if (simulatorScene) {
+            this.createSimulatorSettingsPanel(simulatorOptions, simulatorControls, simulatorScene);
+        }
         this.showGeminiLivePanel(simulatorOptions);
         this.createHandPosePanel(simulatorOptions, simulatorHands);
+        simulatorHands.onHandednessChanged = (handedness) => {
+            this._ensureGamepadToast().flash(`Active Hand: ${handedness === 'left' ? 'Left' : 'Right'}`);
+        };
         this.showInstructions(simulatorOptions);
+        if (input)
+            this._initGamepadUI(input);
     }
-    createModeIndicator(simulatorOptions, simulatorControls) {
-        if (simulatorOptions.modeIndicator.enabled) {
-            const modeIndicatorElement = document.createElement(simulatorOptions.modeIndicator.element);
-            document.body.appendChild(modeIndicatorElement);
-            simulatorControls.setModeIndicatorElement(modeIndicatorElement);
-            this.elements.push(modeIndicatorElement);
+    createSimulatorSettingsPanel(simulatorOptions, simulatorControls, simulatorScene) {
+        if (simulatorOptions.simulatorSettingsPanel.enabled) {
+            const settingsElement = document.createElement(simulatorOptions.simulatorSettingsPanel.element);
+            settingsElement.environments = simulatorOptions.environments;
+            settingsElement.activeEnvironmentIndex =
+                simulatorOptions.activeEnvironmentIndex;
+            document.body.appendChild(settingsElement);
+            simulatorControls.setSimulatorSettingsPanelElement(settingsElement);
+            settingsElement.addEventListener(SetSimulatorEnvironmentEvent.type, (event) => {
+                if (event instanceof SetSimulatorEnvironmentEvent) {
+                    simulatorOptions.activeEnvironmentIndex = event.environmentIndex;
+                    const activeEnv = simulatorOptions.environments[event.environmentIndex];
+                    simulatorScene.setEnvironment(activeEnv?.scenePath ?? null, new THREE.Vector3(simulatorOptions.initialScenePosition.x, simulatorOptions.initialScenePosition.y, simulatorOptions.initialScenePosition.z));
+                }
+            });
+            this.elements.push(settingsElement);
         }
     }
     showInstructions(simulatorOptions) {
@@ -10426,6 +11435,57 @@ class SimulatorInterface {
             this.showUiElements();
         }
     }
+    _initGamepadUI(input) {
+        const gp = input.gamepadController;
+        gp.addEventListener('connected', () => {
+            if (!gp.hasShownToast) {
+                gp.hasShownToast = true;
+                this.showGamepadToast(gp);
+            }
+        });
+        gp.onOpenSettings = () => this.toggleGamepadSettings(gp);
+    }
+    _ensureGamepadToast() {
+        if (!this._gamepadToast) {
+            this._gamepadToast = document.createElement('xrblocks-gamepad-toast');
+            document.body.appendChild(this._gamepadToast);
+        }
+        return this._gamepadToast;
+    }
+    showGamepadToast(gp) {
+        const toast = this._ensureGamepadToast();
+        const b = gp.bindings;
+        toast.show({
+            'Left Stick': 'Move (or Hand in Controller mode)',
+            'Right Stick': 'Look',
+            [btnName(b.getBinding('moveUp')) +
+                ' / ' +
+                btnName(b.getBinding('moveDown'))]: 'Up / Down',
+            [btnName(b.getBinding('select'))]: 'Select / Interact',
+            [btnName(b.getBinding('cycleHandPoseLeft')) +
+                ' / ' +
+                btnName(b.getBinding('cycleHandPoseRight'))]: 'Cycle Hand Pose',
+            [btnName(b.getBinding('cycleSimulatorMode'))]: 'Cycle Simulator Mode',
+            [btnName(b.getBinding('toggleUI'))]: 'Toggle UI',
+            [btnName(b.getBinding('toggleHand'))]: 'Swap Active Hand',
+            [btnName(b.getBinding('openSettings'))]: 'Gamepad Settings',
+        });
+    }
+    toggleGamepadSettings(gp) {
+        if (!this._gamepadSettings) {
+            this._gamepadSettings = document.createElement('xrblocks-gamepad-settings');
+            this._gamepadSettings.bindings = gp.bindings;
+            this._gamepadSettings.gamepadController = gp;
+            this._gamepadSettings.hidden = true;
+            document.body.appendChild(this._gamepadSettings);
+        }
+        if (this._gamepadSettings.hidden) {
+            this._gamepadSettings.show();
+        }
+        else {
+            this._gamepadSettings.hide();
+        }
+    }
 }
 
 class SimulatorScene extends THREE.Scene {
@@ -10434,11 +11494,23 @@ class SimulatorScene extends THREE.Scene {
     }
     async init(simulatorOptions) {
         this.addLights();
-        if (simulatorOptions.videoPath) {
+        const activeEnv = simulatorOptions.environments[simulatorOptions.activeEnvironmentIndex];
+        if (!activeEnv)
+            return;
+        if (activeEnv.videoPath) {
             return;
         }
-        if (simulatorOptions.scenePath) {
-            await this.loadGLTF(simulatorOptions.scenePath, new THREE.Vector3(simulatorOptions.initialScenePosition.x, simulatorOptions.initialScenePosition.y, simulatorOptions.initialScenePosition.z));
+        if (activeEnv.scenePath) {
+            await this.loadGLTF(activeEnv.scenePath, new THREE.Vector3(simulatorOptions.initialScenePosition.x, simulatorOptions.initialScenePosition.y, simulatorOptions.initialScenePosition.z));
+        }
+    }
+    async setEnvironment(path, initialPosition) {
+        if (this.gltf) {
+            this.remove(this.gltf.scene);
+            this.gltf = undefined;
+        }
+        if (path) {
+            await this.loadGLTF(path, initialPosition);
         }
     }
     addLights() {
@@ -10515,8 +11587,11 @@ class SimulatorWorld {
     async init(options, world) {
         this.options = options;
         this.world = world;
-        if (options.world.planes.enabled && options.simulator.scenePlanesPath) {
-            await this.loadPlanes(options.simulator.scenePlanesPath);
+        // Wait for World script initialization to complete first
+        await world.initializedPromise;
+        const activeEnv = options.simulator.environments[options.simulator.activeEnvironmentIndex];
+        if (options.world.planes.enabled && activeEnv?.scenePlanesPath) {
+            await this.loadPlanes(activeEnv.scenePlanesPath);
         }
     }
     async loadPlanes(path) {
@@ -10529,7 +11604,8 @@ class SimulatorWorld {
                     area: plane.area,
                     position: new THREE.Vector3(plane.position.x, plane.position.y, plane.position.z).add(offsetPosition),
                     quaternion: new THREE.Quaternion(plane.quaternion[0], plane.quaternion[1], plane.quaternion[2], plane.quaternion[3]),
-                    polygon: plane.polygon,
+                    polygon: plane.polygon.map((p) => new THREE.Vector2(p.x, p.y)),
+                    label: plane.label,
                 };
             });
             this.world.planes.setSimulatorPlanes(planes);
@@ -10635,6 +11711,331 @@ class DetectedObject extends THREE.Object3D {
 }
 
 /**
+ * Base class for object detector backends.
+ * Handles the orchestration of capturing snapshots, running detection,
+ * and creating visual representations.
+ *
+ * T - The type of additional data associated with the detected object.
+ */
+let BaseDetectorBackend$1 = class BaseDetectorBackend {
+    constructor(context) {
+        this.context = context;
+    }
+    async run(depthMeshSnapshot, cameraParametersSnapshot) {
+        if (!(await this.isAvailable())) {
+            return [];
+        }
+        const snapshot = await this.getSnapshot();
+        if (!snapshot)
+            return [];
+        let normalizedDetections = [];
+        try {
+            normalizedDetections = await this.detect(snapshot);
+        }
+        catch (error) {
+            console.error('Object detection backend failed:', error);
+            return [];
+        }
+        if (this.context.options.objects.showDebugVisualizations) {
+            this.visualize(snapshot, normalizedDetections);
+        }
+        const detectionPromises = normalizedDetections.map(async (item) => {
+            const boundingBox = new THREE.Box2(new THREE.Vector2(item.xmin, item.ymin), new THREE.Vector2(item.xmax, item.ymax));
+            const center = new THREE.Vector2();
+            boundingBox.getCenter(center);
+            const worldCoordinates = transformRgbUvToWorld(center, depthMeshSnapshot, cameraParametersSnapshot);
+            if (worldCoordinates) {
+                const { worldPosition } = worldCoordinates;
+                const margin = this.context.options.objects.objectImageMargin;
+                const cropBox = boundingBox.clone();
+                cropBox.min.subScalar(margin);
+                cropBox.max.addScalar(margin);
+                const imageSource = snapshot.imageData || snapshot.base64;
+                if (!imageSource) {
+                    throw new Error('No valid snapshot data for cropping');
+                }
+                const objectImage = await cropImage(imageSource, cropBox);
+                const object = new DetectedObject(item.objectName, objectImage, boundingBox, item.additionalData);
+                object.position.copy(worldPosition);
+                if (this.context.debugVisualsGroup) {
+                    this.createDebugVisual(object);
+                }
+                return object;
+            }
+            return null;
+        });
+        const detectedObjects = (await Promise.all(detectionPromises)).filter((obj) => obj !== null && obj !== undefined);
+        return detectedObjects;
+    }
+    /**
+     * Creates a debug visual representation for a detected object in the 3D scene.
+     *
+     * @param object - The detected object to visualize.
+     */
+    async createDebugVisual(object) {
+        // Create sphere.
+        const sphere = new THREE.Mesh(new THREE.SphereGeometry(0.03, 16, 16), new THREE.MeshBasicMaterial({ color: 0xff4285f4 }));
+        sphere.position.copy(object.position);
+        // Create and configure the text label using Troika.
+        const { Text } = await import('troika-three-text');
+        const textLabel = new Text();
+        textLabel.text = object.label;
+        textLabel.fontSize = 0.07;
+        textLabel.color = 0xffffff;
+        textLabel.anchorX = 'center';
+        textLabel.anchorY = 'bottom';
+        // Position the label above the sphere
+        textLabel.position.copy(sphere.position);
+        textLabel.position.y += 0.04; // Offset above the sphere.
+        this.context.debugVisualsGroup.add(sphere, textLabel);
+        textLabel.sync(); // Required for Troika text to appear.
+    }
+    /**
+     * Visualizes the detections by drawing bounding boxes on a canvas and downloading the image.
+     * This is used for debugging detection results.
+     *
+     * @param snapshot - The camera snapshot used for detection.
+     * @param detections - The array of normalized detections to draw.
+     */
+    visualize(snapshot, detections) {
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        const drawDetectionsAndDownload = () => {
+            detections.forEach((item) => {
+                const rectX = item.xmin * canvas.width;
+                const rectY = item.ymin * canvas.height;
+                const rectWidth = (item.xmax - item.xmin) * canvas.width;
+                const rectHeight = (item.ymax - item.ymin) * canvas.height;
+                ctx.strokeStyle = '#FF0000';
+                ctx.lineWidth = Math.max(2, canvas.width / 400);
+                ctx.strokeRect(rectX, rectY, rectWidth, rectHeight);
+                const text = item.objectName;
+                const fontSize = Math.max(16, canvas.width / 80);
+                ctx.font = `bold ${fontSize}px sans-serif`;
+                ctx.textBaseline = 'bottom';
+                const textMetrics = ctx.measureText(text);
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+                ctx.fillRect(rectX, rectY - fontSize, textMetrics.width + 8, fontSize + 4);
+                ctx.fillStyle = '#FFFFFF';
+                ctx.fillText(text, rectX + 4, rectY + 2);
+            });
+            const timestamp = new Date()
+                .toISOString()
+                .slice(0, 19)
+                .replace('T', '_')
+                .replace(/:/g, '-');
+            const link = document.createElement('a');
+            link.download = `detection_debug_${timestamp}.png`;
+            link.href = canvas.toDataURL('image/png');
+            link.click();
+        };
+        if (snapshot.imageData) {
+            canvas.width = snapshot.imageData.width;
+            canvas.height = snapshot.imageData.height;
+            ctx.putImageData(snapshot.imageData, 0, 0);
+            drawDetectionsAndDownload();
+        }
+        else if (snapshot.base64) {
+            const img = new Image();
+            img.onload = () => {
+                canvas.width = img.naturalWidth;
+                canvas.height = img.naturalHeight;
+                ctx.drawImage(img, 0, 0);
+                drawDetectionsAndDownload();
+            };
+            img.src = snapshot.base64;
+        }
+    }
+};
+
+/**
+ * Object detector backend implementation using Gemini via the AI service.
+ * Sends image data to a remote model for detection.
+ *
+ * T - The type of additional data associated with the detected object.
+ */
+class GeminiDetectorBackend extends BaseDetectorBackend$1 {
+    async isAvailable() {
+        return !!this.context.ai.isAvailable();
+    }
+    async getSnapshot() {
+        const base64Image = await this.context.deviceCamera.getSnapshot({
+            outputFormat: 'base64',
+        });
+        if (!base64Image)
+            return null;
+        return { base64: base64Image };
+    }
+    buildGeminiConfig() {
+        const geminiOptions = this.context.options.objects.backendConfig.gemini;
+        return {
+            thinkingConfig: {
+                thinkingBudget: 0,
+            },
+            responseMimeType: 'application/json',
+            responseSchema: geminiOptions.responseSchema,
+            systemInstruction: [{ text: geminiOptions.systemInstruction }],
+        };
+    }
+    async detect(snapshot) {
+        const { mimeType, strippedBase64 } = parseBase64DataURL(snapshot.base64);
+        const config = this.buildGeminiConfig();
+        const originalGeminiConfig = this.context.aiOptions.gemini.config;
+        this.context.aiOptions.gemini.config = config;
+        const textPrompt = 'What do you see in this image?';
+        let backendResponse = null;
+        try {
+            backendResponse = await this.context.ai.model.query({
+                type: 'multiPart',
+                parts: [
+                    { inlineData: { mimeType: mimeType || undefined, data: strippedBase64 } },
+                    { text: textPrompt },
+                ],
+            });
+        }
+        catch (e) {
+            console.error('Gemini detection failed', e);
+            return [];
+        }
+        finally {
+            this.context.aiOptions.gemini.config = originalGeminiConfig;
+        }
+        return this.normalizeDetections(backendResponse);
+    }
+    normalizeDetections(backendResponse) {
+        let parsedResponse;
+        try {
+            if (backendResponse && backendResponse.text) {
+                parsedResponse = JSON.parse(backendResponse.text);
+            }
+            else {
+                return [];
+            }
+        }
+        catch (e) {
+            console.warn('Error while normalizing detections in Gemini Response', e);
+            return [];
+        }
+        if (!Array.isArray(parsedResponse))
+            return [];
+        // Map Gemini JSON response to NormalizedDetectedObject format.
+        // Gemini returns coordinates in the range [0, 1000], so we divide by 1000 to normalize.
+        return parsedResponse.reduce((acc, item) => {
+            const { ymin, xmin, ymax, xmax, objectName, ...additionalData } = item || {};
+            if ([ymin, xmin, ymax, xmax].every((coord) => typeof coord === 'number')) {
+                acc.push({
+                    ymin: ymin / 1000,
+                    xmin: xmin / 1000,
+                    ymax: ymax / 1000,
+                    xmax: xmax / 1000,
+                    objectName: objectName || 'unknown',
+                    additionalData: additionalData,
+                });
+            }
+            return acc;
+        }, []);
+    }
+}
+
+let FilesetResolver$1;
+let ObjectDetector$1;
+// --- Attempt Dynamic Import ---
+async function loadMediaPipeModule$1() {
+    if (FilesetResolver$1 && ObjectDetector$1) {
+        return;
+    }
+    try {
+        const mediapipeModule = await import('@mediapipe/tasks-vision');
+        FilesetResolver$1 = mediapipeModule.FilesetResolver;
+        ObjectDetector$1 = mediapipeModule.ObjectDetector;
+        console.log("'@mediapipe/tasks-vision' module loaded successfully.");
+    }
+    catch (error) {
+        console.error('Failed to load MediaPipe module:', error);
+        throw error;
+    }
+}
+/**
+ * Object detector backend implementation using MediaPipe's Object Detector.
+ * Runs locally on the device.
+ *
+ * T - The type of additional data associated with the detected object (not used currently).
+ */
+let MediaPipeDetectorBackend$1 = class MediaPipeDetectorBackend extends BaseDetectorBackend$1 {
+    constructor(context) {
+        super(context);
+        this.objectDetector = null;
+        this.initializationPromise = this.tryInitializeObjectDetector();
+    }
+    async isAvailable() {
+        try {
+            await this.initializationPromise;
+            return true;
+        }
+        catch (e) {
+            console.error('MediaPipe Object Detector is not available:', e);
+            return false;
+        }
+    }
+    async getSnapshot() {
+        const imageData = await this.context.deviceCamera.getSnapshot({
+            outputFormat: 'imageData',
+        });
+        if (!imageData)
+            return null;
+        return { imageData };
+    }
+    async detect(snapshot) {
+        await this.initializationPromise;
+        if (!this.objectDetector)
+            return [];
+        const backendResponse = this.objectDetector.detect(snapshot.imageData);
+        if (!backendResponse)
+            return [];
+        const width = snapshot.imageData.width;
+        const height = snapshot.imageData.height;
+        return this.normalizeDetections(backendResponse, width, height);
+    }
+    normalizeDetections(backendResponse, width, height) {
+        // Map MediaPipe detections to NormalizedDetectedObject format.
+        // We normalize the bounding box coordinates by the image dimensions.
+        return backendResponse.detections.reduce((acc, detection) => {
+            const box = detection.boundingBox;
+            if (box) {
+                const category = detection.categories?.[0];
+                const objectName = category?.categoryName || category?.displayName || 'unknown';
+                acc.push({
+                    ymin: box.originY / height,
+                    xmin: box.originX / width,
+                    ymax: (box.originY + box.height) / height,
+                    xmax: (box.originX + box.width) / width,
+                    objectName: objectName,
+                });
+            }
+            return acc;
+        }, []);
+    }
+    /**
+     * Initializes the MediaPipe Object Detector if it has not already been initialized.
+     * Loads the fileset resolver for vision tasks and creates the detector instance
+     * with the configured model asset path and score threshold.
+     */
+    async tryInitializeObjectDetector() {
+        if (this.objectDetector)
+            return;
+        await loadMediaPipeModule$1();
+        const mediapipeOptions = this.context.options.objects.backendConfig.mediapipe;
+        const vision = await FilesetResolver$1.forVisionTasks(mediapipeOptions.wasmFilesUrl);
+        this.objectDetector = await ObjectDetector$1.createFromOptions(vision, {
+            baseOptions: {
+                modelAssetPath: mediapipeOptions.modelAssetPath,
+            },
+            scoreThreshold: mediapipeOptions.scoreThreshold,
+        });
+    }
+};
+
+/**
  * Detects objects in the user's environment using a specified backend.
  * It queries an AI model with the device camera feed and returns located
  * objects with 2D and 3D positioning data.
@@ -10646,6 +12047,7 @@ class ObjectDetector extends Script {
          * A map from the object's UUID to our custom `DetectedObject` instance.
          */
         this._detectedObjects = new Map();
+        this._detectorBackends = new Map();
         this.targetDevice = 'galaxyxr';
     }
     static { this.dependencies = {
@@ -10669,7 +12071,6 @@ class ObjectDetector extends Script {
         this.depth = depth;
         this.camera = camera;
         this.renderer = renderer;
-        this._geminiConfig = this._buildGeminiConfig();
         if (this.options.objects.showDebugVisualizations) {
             this._debugVisualsGroup = new THREE.Group();
             // Disable raycasting for the debug group to prevent interaction errors.
@@ -10684,119 +12085,66 @@ class ObjectDetector extends Script {
      */
     async runDetection() {
         this.clear(); // Clear previous results before starting a new detection.
-        switch (this.options.objects.backendConfig.activeBackend) {
-            case 'gemini':
-                return this._runGeminiDetection();
-            // Future backends like 'mediapipe' will be handled here.
-            // case 'mediapipe':
-            //   return this._runMediaPipeDetection();
-            default:
-                console.warn(`ObjectDetector backend '${this.options.objects.backendConfig.activeBackend}' is not supported.`);
-                return [];
+        const depthMeshSnapshot = this.getDepthMeshSnapshot();
+        const cameraParametersSnapshot = getCameraParametersSnapshot(this.camera, this.renderer.xr.getCamera(), this.deviceCamera, this.targetDevice);
+        const context = this.getDetectorContext();
+        const activeBackend = this.options.objects.backendConfig.activeBackend;
+        const detectorBackendPromise = this.getOrCreateDetectorBackend(activeBackend, context);
+        let detectorBackend;
+        try {
+            detectorBackend = await detectorBackendPromise;
         }
+        catch (error) {
+            console.warn(`Failed to load or initialize ObjectDetector backend '${activeBackend}':`, error);
+            return [];
+        }
+        const detectedObjects = await detectorBackend.run(depthMeshSnapshot, cameraParametersSnapshot);
+        for (const obj of detectedObjects) {
+            this._detectedObjects.set(obj.uuid, obj);
+            this.add(obj);
+        }
+        return detectedObjects;
+    }
+    getDetectorContext() {
+        return {
+            options: this.options,
+            ai: this.ai,
+            aiOptions: this.aiOptions,
+            deviceCamera: this.deviceCamera,
+            debugVisualsGroup: this._debugVisualsGroup,
+        };
+    }
+    getOrCreateDetectorBackend(activeBackend, context) {
+        let detectorBackendPromise = this._detectorBackends.get(activeBackend);
+        if (!detectorBackendPromise) {
+            detectorBackendPromise = (async () => {
+                switch (activeBackend) {
+                    case 'gemini':
+                        return new GeminiDetectorBackend(context);
+                    case 'mediapipe':
+                        return new MediaPipeDetectorBackend$1(context);
+                    default:
+                        throw new Error(`ObjectDetector backend '${activeBackend}' is not supported.`);
+                }
+            })();
+            this._detectorBackends.set(activeBackend, detectorBackendPromise);
+        }
+        return detectorBackendPromise;
     }
     getDepthMeshSnapshot() {
-        const clonedGeometry = this.depth.depthMesh.geometry.clone();
+        const depthMesh = this.depth.depthMesh;
+        const geometry = this.depth.options.depthMesh.updateFullResolutionGeometry
+            ? depthMesh.geometry
+            : depthMesh.downsampledGeometry || depthMesh.geometry;
+        const clonedGeometry = geometry.clone();
         clonedGeometry.computeBoundingSphere();
         clonedGeometry.computeBoundingBox();
         const depthMeshSnapshot = new THREE.Mesh(clonedGeometry, new THREE.MeshBasicMaterial());
-        this.depth.depthMesh.getWorldPosition(depthMeshSnapshot.position);
-        this.depth.depthMesh.getWorldQuaternion(depthMeshSnapshot.quaternion);
-        this.depth.depthMesh.getWorldScale(depthMeshSnapshot.scale);
+        depthMesh.getWorldPosition(depthMeshSnapshot.position);
+        depthMesh.getWorldQuaternion(depthMeshSnapshot.quaternion);
+        depthMesh.getWorldScale(depthMeshSnapshot.scale);
         depthMeshSnapshot.updateMatrixWorld(true);
         return depthMeshSnapshot;
-    }
-    /**
-     * Runs object detection using the Gemini backend.
-     */
-    async _runGeminiDetection() {
-        if (!this.ai.isAvailable()) {
-            console.error('Gemini is unavailable for object detection.');
-            return [];
-        }
-        // Cache depth and camera data to align with the captured image frame.
-        const depthMeshSnapshot = this.getDepthMeshSnapshot();
-        const cameraParametersSnapshot = getCameraParametersSnapshot(this.camera, this.renderer.xr.getCamera(), this.deviceCamera, this.targetDevice);
-        const base64Image = await this.deviceCamera.getSnapshot({
-            outputFormat: 'base64',
-        });
-        if (!base64Image) {
-            console.warn('Could not get device camera snapshot.');
-            return [];
-        }
-        const { mimeType, strippedBase64 } = parseBase64DataURL(base64Image);
-        // Temporarily set the Gemini config for this specific query type.
-        const originalGeminiConfig = this.aiOptions.gemini.config;
-        this.aiOptions.gemini.config = this._geminiConfig;
-        const textPrompt = 'What do you see in this image?';
-        try {
-            const rawResponse = await this.ai.model.query({
-                type: 'multiPart',
-                parts: [
-                    { inlineData: { mimeType: mimeType || undefined, data: strippedBase64 } },
-                    { text: textPrompt },
-                ],
-            });
-            let parsedResponse;
-            try {
-                if (rawResponse && rawResponse.text) {
-                    parsedResponse = JSON.parse(rawResponse.text);
-                }
-                else {
-                    console.error('AI response is missing text field:', rawResponse, 'Raw response was:', rawResponse);
-                    return [];
-                }
-            }
-            catch (e) {
-                console.error('Failed to parse AI response JSON:', e, 'Raw response was:', rawResponse);
-                return [];
-            }
-            if (!Array.isArray(parsedResponse)) {
-                console.error('Parsed AI response is not an array:', parsedResponse);
-                return [];
-            }
-            if (this.options.objects.showDebugVisualizations) {
-                this._visualizeBoundingBoxesOnImage(base64Image, parsedResponse);
-            }
-            const detectionPromises = parsedResponse.map(async (item) => {
-                const { ymin, xmin, ymax, xmax, objectName, ...additionalData } = item || {};
-                if ([ymin, xmin, ymax, xmax].some((coord) => typeof coord !== 'number')) {
-                    return null;
-                }
-                // Bounding box from AI is 0-1000, convert to normalized 0-1.
-                const boundingBox = new THREE.Box2(new THREE.Vector2(xmin / 1000, ymin / 1000), new THREE.Vector2(xmax / 1000, ymax / 1000));
-                const center = new THREE.Vector2();
-                boundingBox.getCenter(center);
-                const worldCoordinates = transformRgbUvToWorld(center, depthMeshSnapshot, cameraParametersSnapshot);
-                if (worldCoordinates) {
-                    const { worldPosition } = worldCoordinates;
-                    const margin = this.options.objects.objectImageMargin;
-                    // Create a new bounding box for cropping that includes the margin.
-                    const cropBox = boundingBox.clone();
-                    cropBox.min.subScalar(margin);
-                    cropBox.max.addScalar(margin);
-                    const objectImage = await cropImage(base64Image, cropBox);
-                    const object = new DetectedObject(objectName, objectImage, boundingBox, additionalData);
-                    object.position.copy(worldPosition);
-                    this.add(object);
-                    this._detectedObjects.set(object.uuid, object);
-                    if (this._debugVisualsGroup) {
-                        this._createDebugVisual(object);
-                    }
-                    return object;
-                }
-            });
-            const detectedObjects = (await Promise.all(detectionPromises)).filter((obj) => obj !== null && obj !== undefined);
-            return detectedObjects;
-        }
-        catch (error) {
-            console.error('AI query for object detection failed:', error);
-            return [];
-        }
-        finally {
-            // Restore the original config after the query.
-            this.aiOptions.gemini.config = originalGeminiConfig;
-        }
     }
     /**
      * Retrieves a list of currently detected objects.
@@ -10834,59 +12182,6 @@ class ObjectDetector extends Script {
         if (this._debugVisualsGroup) {
             this._debugVisualsGroup.visible = visible;
         }
-    }
-    /**
-     * Draws the detected bounding boxes on the input image and triggers a
-     * download for debugging.
-     * @param base64Image - The base64 encoded input image.
-     * @param detections - The array of detected objects from the AI response.
-     */
-    _visualizeBoundingBoxesOnImage(base64Image, detections) {
-        const img = new Image();
-        img.onload = () => {
-            const canvas = document.createElement('canvas');
-            canvas.width = img.naturalWidth;
-            canvas.height = img.naturalHeight;
-            const ctx = canvas.getContext('2d');
-            ctx.drawImage(img, 0, 0);
-            detections.forEach((item) => {
-                const { ymin, xmin, ymax, xmax, objectName } = (item || {});
-                if ([ymin, xmin, ymax, xmax].some((coord) => typeof coord !== 'number')) {
-                    return;
-                }
-                // Bounding box from AI is 0-1000, scale it to image dimensions.
-                const rectX = (xmin / 1000) * canvas.width;
-                const rectY = (ymin / 1000) * canvas.height;
-                const rectWidth = ((xmax - xmin) / 1000) * canvas.width;
-                const rectHeight = ((ymax - ymin) / 1000) * canvas.height;
-                ctx.strokeStyle = '#FF0000';
-                ctx.lineWidth = Math.max(2, canvas.width / 400);
-                ctx.strokeRect(rectX, rectY, rectWidth, rectHeight);
-                // Draw label.
-                const text = objectName || 'unknown';
-                const fontSize = Math.max(16, canvas.width / 80);
-                ctx.font = `bold ${fontSize}px sans-serif`;
-                ctx.textBaseline = 'bottom';
-                const textMetrics = ctx.measureText(text);
-                // Draw a background for the text for better readability.
-                ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
-                ctx.fillRect(rectX, rectY - fontSize, textMetrics.width + 8, fontSize + 4);
-                // Draw the text itself.
-                ctx.fillStyle = '#FFFFFF'; // White text
-                ctx.fillText(text, rectX + 4, rectY + 2);
-            });
-            // Create a link and trigger the download.
-            const timestamp = new Date()
-                .toISOString()
-                .slice(0, 19)
-                .replace('T', '_')
-                .replace(/:/g, '-');
-            const link = document.createElement('a');
-            link.download = `detection_debug_${timestamp}.png`;
-            link.href = canvas.toDataURL('image/png');
-            link.click();
-        };
-        img.src = base64Image;
     }
     /**
      * Generates a visual representation of the depth map, normalized to 0-1 range,
@@ -10953,43 +12248,6 @@ class ObjectDetector extends Script {
         link.href = canvas.toDataURL('image/png');
         link.click();
     }
-    /**
-     * Creates a simple debug visualization for an object based on its position
-     * (center of its 2D detection bounding box).
-     * @param object - The detected object to visualize.
-     */
-    async _createDebugVisual(object) {
-        // Create sphere.
-        const sphere = new THREE.Mesh(new THREE.SphereGeometry(0.03, 16, 16), new THREE.MeshBasicMaterial({ color: 0xff4285f4 }));
-        sphere.position.copy(object.position);
-        // Create and configure the text label using Troika.
-        const { Text } = await import('troika-three-text');
-        const textLabel = new Text();
-        textLabel.text = object.label;
-        textLabel.fontSize = 0.07;
-        textLabel.color = 0xffffff;
-        textLabel.anchorX = 'center';
-        textLabel.anchorY = 'bottom';
-        // Position the label above the sphere
-        textLabel.position.copy(sphere.position);
-        textLabel.position.y += 0.04; // Offset above the sphere.
-        this._debugVisualsGroup.add(sphere, textLabel);
-        textLabel.sync(); // Required for Troika text to appear.
-    }
-    /**
-     * Builds the Gemini configuration object from the world options.
-     */
-    _buildGeminiConfig() {
-        const geminiOptions = this.options.objects.backendConfig.gemini;
-        return {
-            thinkingConfig: {
-                thinkingBudget: 0,
-            },
-            responseMimeType: 'application/json',
-            responseSchema: geminiOptions.responseSchema,
-            systemInstruction: [{ text: geminiOptions.systemInstruction }],
-        };
-    }
 }
 
 /**
@@ -11034,7 +12292,7 @@ class DetectedPlane extends THREE.Mesh {
             this.orientation = xrPlane.orientation;
         }
         else if (simulatorPlane) {
-            this.label = simulatorPlane.type;
+            this.label = simulatorPlane.label || simulatorPlane.type;
             this.orientation = simulatorPlane.type;
             this.position.copy(simulatorPlane.position);
             this.quaternion.copy(simulatorPlane.quaternion);
@@ -11186,6 +12444,7 @@ class PlaneDetector extends Script {
     _addSimulatorPlaneMesh(plane) {
         const material = this._debugMaterial || new THREE.MeshBasicMaterial({ visible: false });
         const planeMesh = new DetectedPlane(null, material, plane);
+        this._detectedPlanes.set(plane, planeMesh);
         this.add(planeMesh);
         return planeMesh;
     }
@@ -11199,6 +12458,10 @@ class PlaneDetector extends Script {
 }
 
 class DetectedMesh extends THREE.Mesh {
+    // Expose rigidBody for pose updates
+    get getRigidBody() {
+        return this.rigidBody;
+    }
     constructor(mesh, material) {
         const geometry = new THREE.BufferGeometry();
         geometry.setAttribute('position', new THREE.BufferAttribute(mesh.vertices, 3));
@@ -11225,12 +12488,38 @@ class DetectedMesh extends THREE.Mesh {
         if (mesh.lastChangedTime === this.lastChangedTime)
             return;
         this.lastChangedTime = mesh.lastChangedTime;
-        const geometry = new THREE.BufferGeometry();
-        geometry.setAttribute('position', new THREE.BufferAttribute(mesh.vertices, 3));
-        geometry.setIndex(new THREE.BufferAttribute(mesh.indices, 1));
-        geometry.computeVertexNormals();
-        this.geometry.dispose();
-        this.geometry = geometry;
+        // Update existing geometry attributes instead of creating new geometry
+        const positionAttribute = this.geometry.attributes.position;
+        const indexAttribute = this.geometry.getIndex();
+        const newVertexCount = mesh.vertices.length / 3;
+        const newIndexCount = mesh.indices.length;
+        if (positionAttribute.count !== newVertexCount ||
+            (indexAttribute && indexAttribute.count !== newIndexCount)) {
+            // Vertex or index count changed - recreate geometry
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.BufferAttribute(mesh.vertices, 3));
+            geometry.setIndex(new THREE.BufferAttribute(mesh.indices, 1));
+            geometry.computeVertexNormals();
+            this.geometry.dispose();
+            this.geometry = geometry;
+        }
+        else {
+            // Same vertex count - update in place (more efficient)
+            const positions = positionAttribute.array;
+            if (positions.length === mesh.vertices.length) {
+                positions.set(mesh.vertices);
+                positionAttribute.needsUpdate = true;
+            }
+            if (indexAttribute) {
+                const indices = indexAttribute.array;
+                if (indices.length === mesh.indices.length) {
+                    indices.set(mesh.indices);
+                    indexAttribute.needsUpdate = true;
+                }
+            }
+            this.geometry.computeVertexNormals();
+        }
+        // Update collider
         if (this.RAPIER && this.collider) {
             const RAPIER = this.RAPIER;
             this.blendedWorld.removeCollider(this.collider, false);
@@ -11238,10 +12527,21 @@ class DetectedMesh extends THREE.Mesh {
             this.collider = this.blendedWorld.createCollider(colliderDesc, this.rigidBody);
         }
     }
+    dispose() {
+        if (this.blendedWorld && this.collider) {
+            this.blendedWorld.removeCollider(this.collider, false);
+            this.collider = undefined;
+        }
+        if (this.blendedWorld && this.rigidBody) {
+            this.blendedWorld.removeRigidBody(this.rigidBody);
+            this.rigidBody = undefined;
+        }
+        this.geometry.dispose();
+    }
 }
 
-const SEMANTIC_LABELS = ['Floor', 'Ceiling', 'Wall', 'Table'];
-const SEMANTIC_COLORS = [0x00ff00, 0xff0000, 0x0000ff, 0xffff00];
+const SEMANTIC_LABELS = ['floor', 'ceiling', 'wall'];
+const SEMANTIC_COLORS = [0x00ff00, 0xffff00, 0x0000ff];
 // Wrapper around WebXR Mesh Detection API
 // https://immersive-web.github.io/real-world-meshing/
 class MeshDetector extends Script {
@@ -11252,6 +12552,19 @@ class MeshDetector extends Script {
         this.xrMeshToThreeMesh = new Map();
         this.threeMeshToXrMesh = new Map();
         this.defaultMaterial = new THREE.MeshBasicMaterial({ visible: false });
+        this.meshTimedata = new Map();
+        // Optimization1: Mesh update throttling (similar to ARCore reflection cube map in /usr/local/google/home/adamren/Desktop/xrlabs/arlabs/xrblocks/samples/lighting)
+        this.MESH_UPDATE_INTERVAL_MS = 1000; //0 -> 1000
+        this.lastMeshUpdateTime = 0;
+        // Optimization2: Periodic cleanup of stale/distant meshes
+        this.MESH_STALE_TIME_MS = 3000; //1000000000 -> 3000
+        this.CLEANUP_INTERVAL_MS = this.MESH_STALE_TIME_MS + 1000;
+        // Optimization3: Camera culling constants
+        this.kMaxViewDistance = 3.0; //1000000000.0 -> 3.0
+        this.kFOVCosThreshold = 0.25; //0.0 -> 0.25
+        this.lastCleanupTime = 0;
+        // Profiling
+        this.frameCount = 0;
     }
     static { this.dependencies = {
         options: MeshDetectionOptions,
@@ -11281,33 +12594,102 @@ class MeshDetector extends Script {
         }
     }
     updateMeshes(_timestamp, frame) {
+        this.frameCount++;
+        // Profiling1: Time spent in accessing detectedMeshes
+        const t0 = performance.now();
         const meshes = frame?.detectedMeshes;
-        if (!meshes)
+        performance.now() - t0;
+        // console.log(
+        //   `[MeshDetector Frame ${this.frameCount}] ` +
+        //   `detectedMeshes access: ${_detectedMeshesTime.toFixed(3)}ms, ` +
+        //   `timestamp: ${_timestamp.toFixed(3)}, ` +
+        //   `meshCount: ${meshes?.size || 0}`
+        // );
+        if (!meshes || !frame)
             return;
-        // Delete old meshes
-        for (const [xrMesh, threeMesh] of this.xrMeshToThreeMesh.entries()) {
-            if (!meshes.has(xrMesh)) {
-                this.xrMeshToThreeMesh.delete(xrMesh);
-                this.threeMeshToXrMesh.delete(threeMesh);
-                threeMesh.geometry.dispose();
-                this.remove(threeMesh);
-            }
+        // Optimization1: Mesh update throttling
+        const now = performance.now();
+        const timeSinceLastUpdate = now - this.lastMeshUpdateTime;
+        if (timeSinceLastUpdate < this.MESH_UPDATE_INTERVAL_MS) {
+            return;
         }
-        // Add new meshes
+        this.lastMeshUpdateTime = now;
+        // Process meshes
+        const referenceSpace = this.renderer.xr.getReferenceSpace();
+        if (!referenceSpace)
+            return;
+        const { position: cameraPosition, forward: cameraForward } = this.getCameraInfo(frame, referenceSpace);
         for (const xrMesh of meshes) {
-            if (!this.xrMeshToThreeMesh.has(xrMesh)) {
+            // Optimization2: Check if mesh is in view and get distance
+            const isVisible = this.shouldShowMeshInViewWithDistance(xrMesh, cameraPosition, cameraForward, frame, referenceSpace);
+            if (!isVisible) {
+                continue;
+            }
+            // Create or update mesh
+            const cachedChangedTime = this.meshTimedata.get(xrMesh)?.lastChangedTime;
+            const currentChangedTime = xrMesh.lastChangedTime;
+            const isNewMesh = cachedChangedTime === undefined;
+            const isUpdated = cachedChangedTime !== undefined &&
+                cachedChangedTime !== currentChangedTime;
+            const isUnchanged = cachedChangedTime !== undefined &&
+                cachedChangedTime === currentChangedTime;
+            if (isNewMesh) {
                 const threeMesh = this.createMesh(frame, xrMesh);
                 this.xrMeshToThreeMesh.set(xrMesh, threeMesh);
                 this.threeMeshToXrMesh.set(threeMesh, xrMesh);
+                this.meshTimedata.set(xrMesh, {
+                    lastChangedTime: currentChangedTime,
+                    lastSeenTime: now,
+                });
                 this.add(threeMesh);
                 if (this.physics) {
                     threeMesh.initRapierPhysics(this.physics.RAPIER, this.physics.blendedWorld);
                 }
             }
-            else {
+            else if (isUpdated) {
                 const threeMesh = this.xrMeshToThreeMesh.get(xrMesh);
                 threeMesh.updateVertices(xrMesh);
+                // Update needed in case we have drift correction.
                 this.updateMeshPose(frame, xrMesh, threeMesh);
+                this.meshTimedata.set(xrMesh, {
+                    lastChangedTime: currentChangedTime,
+                    lastSeenTime: now,
+                });
+            }
+            else if (isUnchanged) {
+                this.meshTimedata.set(xrMesh, {
+                    lastChangedTime: currentChangedTime,
+                    lastSeenTime: now,
+                });
+            }
+        }
+        // Optimization3: Periodic cleanup of stale/distant meshes
+        if (now - this.lastCleanupTime >= this.CLEANUP_INTERVAL_MS) {
+            this.cleanupStaleMeshes(now);
+            this.lastCleanupTime = now;
+        }
+    }
+    removeMesh(xrMesh, threeMesh) {
+        this.xrMeshToThreeMesh.delete(xrMesh);
+        this.threeMeshToXrMesh.delete(threeMesh);
+        this.meshTimedata.delete(xrMesh);
+        threeMesh.dispose();
+        this.remove(threeMesh);
+    }
+    cleanupStaleMeshes(now) {
+        const meshesToRemove = [];
+        for (const [xrMesh] of this.xrMeshToThreeMesh.entries()) {
+            const cachedSeenTime = this.meshTimedata.get(xrMesh)?.lastSeenTime;
+            const timeSinceLastSeen = now - (cachedSeenTime || 0);
+            const isStale = timeSinceLastSeen >= this.MESH_STALE_TIME_MS;
+            if (isStale) {
+                meshesToRemove.push(xrMesh);
+            }
+        }
+        for (const xrMesh of meshesToRemove) {
+            const threeMesh = this.xrMeshToThreeMesh.get(xrMesh);
+            if (threeMesh) {
+                this.removeMesh(xrMesh, threeMesh);
             }
         }
     }
@@ -11325,326 +12707,155 @@ class MeshDetector extends Script {
         if (pose) {
             mesh.position.copy(pose.transform.position);
             mesh.quaternion.copy(pose.transform.orientation);
+            // Update physics rigid body pose if it exists
+            if (mesh instanceof DetectedMesh) {
+                const rigidBody = mesh.getRigidBody;
+                rigidBody?.setTranslation(mesh.position, false);
+                rigidBody?.setRotation(mesh.quaternion, false);
+            }
         }
     }
-}
-
-// Import other modules as they are implemented in future.
-// import { SceneMesh } from '/depth/SceneMesh.js';
-// import { LightEstimation } from '/lighting/LightEstimation.js';
-// import { HumanRecognizer } from '/human/HumanRecognizer.js';
-/**
- * Manages all interactions with the real-world environment perceived by the XR
- * device. This class abstracts the complexity of various perception APIs
- * (Depth, Planes, Meshes, etc.) and provides a simple, event-driven interface
- * for developers to use `this.world.depth.mesh`, `this.world.planes`.
- */
-class World extends Script {
-    constructor() {
-        super(...arguments);
-        this.editorIcon = 'sensors';
-        /**
-         * A Three.js Raycaster for performing intersection tests.
-         */
-        this.raycaster = new THREE.Raycaster();
-        // Whether we need to initiate a room capture.
-        this.needsRoomCapture = false;
+    getCameraInfo(frame, referenceSpace) {
+        const viewerPose = frame.getViewerPose(referenceSpace);
+        const cameraPosition = new THREE.Vector3(0, 0, 0);
+        let cameraForward = new THREE.Vector3(0, 0, -1);
+        if (viewerPose && viewerPose.views && viewerPose.views.length > 0) {
+            // Get camera position from first view's transform
+            const viewTransform = viewerPose.views[0].transform;
+            const viewMatrix = new THREE.Matrix4().fromArray(viewTransform.matrix);
+            cameraPosition.setFromMatrixPosition(viewMatrix);
+            // Extract forward vector from matrix (typically -Z axis)
+            const forward = new THREE.Vector3(0, 0, -1);
+            forward.applyMatrix4(viewMatrix);
+            forward.sub(cameraPosition).normalize();
+            cameraForward = forward;
+        }
+        return { position: cameraPosition, forward: cameraForward };
     }
-    static { this.dependencies = {
-        options: WorldOptions,
-        camera: THREE.Camera,
-    }; }
-    /**
-     * Initializes the world-sensing modules based on the provided configuration.
-     * This method is called automatically by the XRCore.
-     */
-    async init({ options, camera, }) {
-        this.options = options;
-        this.camera = camera;
-        if (!this.options || !this.options.enabled) {
-            return;
-        }
-        this.needsRoomCapture = this.options.initiateRoomCapture;
-        // Conditionally initialize each perception module based on options.
-        if (this.options.planes.enabled) {
-            this.planes = new PlaneDetector();
-            this.add(this.planes);
-        }
-        if (this.options.objects.enabled) {
-            this.objects = new ObjectDetector();
-            this.add(this.objects);
-        }
-        if (this.options.meshes.enabled) {
-            this.meshes = new MeshDetector();
-            this.add(this.meshes);
-        }
-        // TODO: Initialize other modules as they are available & implemented.
-        /*
-    
-        if (this.options.lighting.enabled) {
-          this.lighting = new LightEstimation();
-        }
-    
-        if (this.options.humans.enabled) {
-          this.humans = new HumanRecognizer();
-        }
-        */
+    computeMeshBoundingBox(xrMesh) {
+        const vertices = xrMesh.vertices;
+        if (vertices.length < 3)
+            return null;
+        return new THREE.Box3().setFromArray(vertices);
     }
-    /**
-     * Places an object at the reticle.
-     */
-    anchorObjectAtReticle(_object, _reticle) {
-        throw new Error('Method not implemented');
+    /** Six clip planes from the view-projection matrix (left, right, bottom, top, near, far). */
+    buildFrustumPlanes(viewMatrix, projectionMatrix) {
+        const viewProjectionMatrix = new THREE.Matrix4();
+        viewProjectionMatrix.multiplyMatrices(projectionMatrix, viewMatrix);
+        const e = viewProjectionMatrix.elements;
+        const planes = [
+            new THREE.Plane().setComponents(e[3] + e[0], e[7] + e[4], e[11] + e[8], e[15] + e[12]),
+            new THREE.Plane().setComponents(e[3] - e[0], e[7] - e[4], e[11] - e[8], e[15] - e[12]),
+            new THREE.Plane().setComponents(e[3] + e[1], e[7] + e[5], e[11] + e[9], e[15] + e[13]),
+            new THREE.Plane().setComponents(e[3] - e[1], e[7] - e[5], e[11] - e[9], e[15] - e[13]),
+            new THREE.Plane().setComponents(e[3] + e[2], e[7] + e[6], e[11] + e[10], e[15] + e[14]),
+            new THREE.Plane().setComponents(e[3] - e[2], e[7] - e[6], e[11] - e[10], e[15] - e[14]),
+        ];
+        for (const plane of planes) {
+            if (plane.normal.length() > 0.0001) {
+                plane.normalize();
+            }
+        }
+        return planes;
     }
-    /**
-     * Updates all active world-sensing modules with the latest XRFrame data.
-     * This method is called automatically by the XRCore on each frame.
-     * @param _timestamp - The timestamp for the current frame.
-     * @param frame - The current XRFrame, containing environmental
-     * data.
-     * @override
-     */
-    update(_timestamp, frame) {
-        if (!this.options?.enabled || !frame) {
-            return;
+    // Check if AABB intersects the frustum (based on C++ IntersectsBox)
+    frustumIntersectsBox(planes, box) {
+        const boxMin = box.min;
+        const boxMax = box.max;
+        const axisVert = new THREE.Vector3();
+        for (const plane of planes) {
+            const n = plane.normal;
+            axisVert.x = n.x < 0.0 ? boxMin.x : boxMax.x;
+            axisVert.y = n.y < 0.0 ? boxMin.y : boxMax.y;
+            axisVert.z = n.z < 0.0 ? boxMin.z : boxMax.z;
+            if (plane.distanceToPoint(axisVert) < 0.0) {
+                return false;
+            }
         }
-        if (this.needsRoomCapture && frame.session.initiateRoomCapture) {
-            this.needsRoomCapture = false;
-            frame.session.initiateRoomCapture();
-        }
-        this.meshes?.updateMeshes(_timestamp, frame);
+        return true;
     }
-    /**
-     * Performs a raycast from a controller against detected real-world surfaces
-     * (currently planes) and places a 3D object at the intersection point,
-     * oriented to face the user.
-     *
-     * We recommend using /templates/3_depth/ to anchor objects based on
-     * depth mesh for mixed reality experience for accuracy. This function is
-     * design for demonstration purposes.
-     *
-     * @param objectToPlace - The object to position in the
-     * world.
-     * @param controller - The controller to use for raycasting.
-     * @returns True if the object was successfully placed, false
-     * otherwise.
-     */
-    placeOnSurface(objectToPlace, controller) {
-        if (!this.planes) {
-            console.warn('Cannot placeOnSurface: PlaneDetector is not enabled.');
-            return false;
+    // New method: Frustum culling
+    shouldShowMeshInViewWithFrustum(mesh, frame, referenceSpace) {
+        // Get mesh pose
+        const meshPose = frame.getPose(mesh.meshSpace, referenceSpace);
+        if (!meshPose) {
+            return true; // If pose is unavailable, show by default
         }
-        const allPlanes = this.planes.get();
-        if (allPlanes.length === 0) {
-            return false; // No surfaces to cast against.
-        }
-        this.raycaster.setFromXRController(controller);
-        const intersections = this.raycaster.intersectObjects(allPlanes);
-        if (intersections.length > 0) {
-            const intersection = intersections[0];
-            placeObjectAtIntersectionFacingTarget(objectToPlace, intersection, this.camera);
+        // Get viewer pose and the first view
+        const viewerPose = frame.getViewerPose(referenceSpace);
+        if (!viewerPose || !viewerPose.views || viewerPose.views.length === 0) {
             return true;
         }
-        return false;
+        const view = viewerPose.views[0];
+        if (!view.projectionMatrix) {
+            return true; // If no projection matrix, fall back to default behavior
+        }
+        // Compute mesh bounding box in local space
+        const localBoundingBox = this.computeMeshBoundingBox(mesh);
+        if (!localBoundingBox) {
+            return true; // If bounding box cannot be computed, show by default
+        }
+        const meshTransform = new THREE.Matrix4().fromArray(meshPose.transform.matrix);
+        const meshPosition = new THREE.Vector3();
+        const meshQuaternion = new THREE.Quaternion();
+        const meshScale = new THREE.Vector3();
+        meshTransform.decompose(meshPosition, meshQuaternion, meshScale);
+        // Transform bounding box 8 corners to reference space
+        const corners = [
+            new THREE.Vector3(localBoundingBox.min.x, localBoundingBox.min.y, localBoundingBox.min.z),
+            new THREE.Vector3(localBoundingBox.max.x, localBoundingBox.min.y, localBoundingBox.min.z),
+            new THREE.Vector3(localBoundingBox.min.x, localBoundingBox.max.y, localBoundingBox.min.z),
+            new THREE.Vector3(localBoundingBox.max.x, localBoundingBox.max.y, localBoundingBox.min.z),
+            new THREE.Vector3(localBoundingBox.min.x, localBoundingBox.min.y, localBoundingBox.max.z),
+            new THREE.Vector3(localBoundingBox.max.x, localBoundingBox.min.y, localBoundingBox.max.z),
+            new THREE.Vector3(localBoundingBox.min.x, localBoundingBox.max.y, localBoundingBox.max.z),
+            new THREE.Vector3(localBoundingBox.max.x, localBoundingBox.max.y, localBoundingBox.max.z),
+        ];
+        // Apply mesh transform (order: scale, then rotate, then translate)
+        for (const corner of corners) {
+            corner.multiply(meshScale);
+            corner.applyQuaternion(meshQuaternion);
+            corner.add(meshPosition);
+        }
+        const worldBox = new THREE.Box3().setFromPoints(corners);
+        // Build view matrix (from view transform)
+        const viewTransform = view.transform;
+        const viewMatrix = new THREE.Matrix4()
+            .fromArray(viewTransform.matrix)
+            .invert();
+        // Build projection matrix
+        const projectionMatrix = new THREE.Matrix4().fromArray(view.projectionMatrix);
+        // Build frustum planes
+        const frustumPlanes = this.buildFrustumPlanes(viewMatrix, projectionMatrix);
+        return this.frustumIntersectsBox(frustumPlanes, worldBox);
     }
-    /**
-     * Toggles the visibility of all debug visualizations for world features.
-     * @param visible - Whether the visualizations should be visible.
-     */
-    showDebugVisualizations(visible = true) {
-        this.planes?.showDebugVisualizations(visible);
-        this.objects?.showDebugVisualizations(visible);
-    }
-}
-
-class Simulator extends Script {
-    static { this.dependencies = {
-        simulatorOptions: SimulatorOptions,
-        input: Input,
-        timer: THREE.Timer,
-        camera: THREE.Camera,
-        renderer: THREE.WebGLRenderer,
-        scene: THREE.Scene,
-        registry: Registry,
-        options: Options,
-        depth: Depth,
-        world: World,
-    }; }
-    constructor(renderMainScene) {
-        super();
-        this.renderMainScene = renderMainScene;
-        this.editorIcon = 'simulation';
-        this.simulatorScene = new SimulatorScene();
-        this.simulatorWorld = new SimulatorWorld();
-        this.depth = new SimulatorDepth(this.simulatorScene);
-        // Controller poses relative to the camera.
-        this.simulatorControllerState = new SimulatorControllerState();
-        this.hands = new SimulatorHands(this.simulatorControllerState, this.simulatorScene);
-        this.simulatorUser = new SimulatorUser();
-        this.userInterface = new SimulatorInterface();
-        this.controls = new SimulatorControls(this.simulatorControllerState, this.hands, this.setStereoRenderMode.bind(this), this.userInterface);
-        this.renderDepthPass = false;
-        this.renderMode = SimulatorRenderMode.DEFAULT;
-        this.stereoCameras = [];
-        this.initialized = false;
-        this.renderSimulatorSceneToCanvasBound = this.renderSimulatorSceneToCanvas.bind(this);
-        this.add(this.simulatorUser);
-    }
-    async init({ simulatorOptions, input, timer, camera, renderer, scene, registry, options, depth, world, }) {
-        if (this.initialized)
-            return;
-        // Get optional dependencies from the registry.
-        const deviceCamera = registry.get(XRDeviceCamera);
-        this.options = simulatorOptions;
-        camera.position.copy(this.options.initialCameraPosition);
-        this.userInterface.init(simulatorOptions, this.controls, this.hands);
-        renderer.autoClearColor = false;
-        await this.simulatorScene.init(simulatorOptions);
-        await this.simulatorWorld.init(options, world);
-        this.hands.init({ input });
-        this.controls.init({ camera, input, timer, renderer, simulatorOptions });
-        if (deviceCamera && !this.camera) {
-            this.camera = new SimulatorCamera(renderer);
-            this.camera.init();
-            deviceCamera.registerSimulatorCamera(this.camera);
+    shouldShowMeshInViewWithDistance(mesh, cameraPosition, cameraForward, frame, referenceSpace) {
+        // Distance check
+        const meshPose = frame.getPose(mesh.meshSpace, referenceSpace);
+        if (!meshPose) {
+            return true;
         }
-        if (options.depth.enabled) {
-            this.renderDepthPass = true;
-            this.depth.init(renderer, camera, depth);
+        const meshPosition = new THREE.Vector3();
+        meshPosition.setFromMatrixPosition(new THREE.Matrix4().fromArray(meshPose.transform.matrix));
+        const dx = meshPosition.x - cameraPosition.x;
+        const dy = meshPosition.y - cameraPosition.y;
+        const dz = meshPosition.z - cameraPosition.z;
+        const distanceSq = dx * dx + dy * dy + dz * dz;
+        const distance = Math.sqrt(distanceSq);
+        if (distance > this.kMaxViewDistance) {
+            return false;
         }
-        scene.add(camera);
-        if (this.options.stereo.enabled) {
-            this.setupStereoCameras(camera);
+        // FOV check
+        if (distance > 0.001) {
+            const invDistance = 1.0 / distance;
+            const dotForward = dx * invDistance * cameraForward.x +
+                dy * invDistance * cameraForward.y +
+                dz * invDistance * cameraForward.z;
+            if (dotForward < this.kFOVCosThreshold) {
+                return false;
+            }
         }
-        if (this.options.videoPath) {
-            this.videoElement = document.createElement('video');
-            this.videoElement.src = this.options.videoPath;
-            this.videoElement.loop = true;
-            this.videoElement.muted = true;
-            this.videoElement.play().catch((e) => {
-                console.error(`Simulator: Failed to play video at ${this.options.videoPath}`, e);
-            });
-            this.videoElement.addEventListener('error', () => {
-                console.error(`Simulator: Error loading video at ${this.options.videoPath}`, this.videoElement?.error);
-            });
-            const videoTexture = new THREE.VideoTexture(this.videoElement);
-            videoTexture.colorSpace = THREE.SRGBColorSpace;
-            this.backgroundVideoQuad = new FullScreenQuad(new THREE.MeshBasicMaterial({ map: videoTexture }));
-        }
-        this.virtualSceneRenderTarget = new THREE.WebGLRenderTarget(renderer.domElement.width, renderer.domElement.height, { stencilBuffer: options.stencil });
-        const virtualSceneMaterial = new THREE.MeshBasicMaterial({
-            map: this.virtualSceneRenderTarget.texture,
-            transparent: true,
-        });
-        if (this.options.blendingMode === 'screen') {
-            virtualSceneMaterial.blending = THREE.CustomBlending;
-            virtualSceneMaterial.blendSrc = THREE.OneFactor;
-            virtualSceneMaterial.blendDst = THREE.OneMinusSrcColorFactor;
-            virtualSceneMaterial.blendEquation = THREE.AddEquation;
-        }
-        this.virtualSceneFullScreenQuad = new FullScreenQuad(virtualSceneMaterial);
-        this.renderer = renderer;
-        this.mainCamera = camera;
-        this.mainScene = scene;
-        this.registry = registry;
-        this.initialized = true;
-    }
-    simulatorUpdate() {
-        this.controls.update();
-        this.hands.update();
-        if (this.renderDepthPass) {
-            this.depth.update();
-        }
-    }
-    setStereoRenderMode(mode) {
-        if (!this.options.stereo.enabled)
-            return;
-        this.renderMode = mode;
-    }
-    setupStereoCameras(camera) {
-        const leftCamera = camera.clone();
-        const rightCamera = camera.clone();
-        leftCamera.layers.disableAll();
-        leftCamera.layers.enable(0);
-        leftCamera.layers.enable(1);
-        rightCamera.layers.disableAll();
-        rightCamera.layers.enable(0);
-        rightCamera.layers.enable(2);
-        leftCamera.position.set(-AVERAGE_IPD_METERS / 2, 0, 0);
-        rightCamera.position.set(AVERAGE_IPD_METERS / 2, 0, 0);
-        leftCamera.updateWorldMatrix(true, false);
-        rightCamera.updateWorldMatrix(true, false);
-        this.stereoCameras.length = 0;
-        this.stereoCameras.push(leftCamera, rightCamera);
-        camera.add(leftCamera, rightCamera);
-        this.setStereoRenderMode(SimulatorRenderMode.STEREO_LEFT);
-    }
-    onBeforeSimulatorSceneRender() {
-        if (this.camera) {
-            this.camera.onBeforeSimulatorSceneRender(this.mainCamera, this.renderSimulatorSceneToCanvasBound);
-        }
-    }
-    onSimulatorSceneRendered() {
-        if (this.camera) {
-            this.camera.onSimulatorSceneRendered();
-        }
-    }
-    getRenderCamera() {
-        return {
-            [SimulatorRenderMode.DEFAULT]: this.mainCamera,
-            [SimulatorRenderMode.STEREO_LEFT]: this.stereoCameras[0],
-            [SimulatorRenderMode.STEREO_RIGHT]: this.stereoCameras[1],
-        }[this.renderMode];
-    }
-    // Called by core when the simulator is running.
-    renderScene() {
-        if (!this.renderer)
-            return;
-        if (!this.options.renderToRenderTexture)
-            return;
-        // Allocate a new render target if the resolution changes.
-        if (this.virtualSceneRenderTarget.width != this.renderer.domElement.width ||
-            this.virtualSceneRenderTarget.height != this.renderer.domElement.height) {
-            const stencilEnabled = !!this.virtualSceneRenderTarget?.stencilBuffer;
-            this.virtualSceneRenderTarget.dispose();
-            this.virtualSceneRenderTarget = new THREE.WebGLRenderTarget(this.renderer.domElement.width, this.renderer.domElement.height, { stencilBuffer: stencilEnabled });
-            this.virtualSceneFullScreenQuad.material.map = this.virtualSceneRenderTarget.texture;
-        }
-        this.sparkRenderer =
-            this.sparkRenderer || this.registry.get(SparkRendererHolder)?.renderer;
-        if (this.sparkRenderer) {
-            this.sparkRenderer.defaultView.encodeLinear = true;
-        }
-        this.renderer.setRenderTarget(this.virtualSceneRenderTarget);
-        this.renderer.clear();
-        this.renderMainScene(this.getRenderCamera());
-    }
-    // Renders the simulator scene onto the main canvas.
-    // Then composites the virtual render with the simulator render.
-    // Called by core after renderScene.
-    renderSimulatorScene() {
-        this.onBeforeSimulatorSceneRender();
-        this.renderSimulatorSceneToCanvas(this.getRenderCamera());
-        this.onSimulatorSceneRendered();
-        if (this.options.renderToRenderTexture) {
-            this.virtualSceneFullScreenQuad.render(this.renderer);
-        }
-        else {
-            // Temporary workaround since splats look faded when rendered to a render
-            // texture.
-            this.renderMainScene(this.getRenderCamera());
-        }
-    }
-    renderSimulatorSceneToCanvas(camera) {
-        if (this.sparkRenderer) {
-            this.sparkRenderer.defaultView.encodeLinear = false;
-        }
-        this.renderer.setRenderTarget(null);
-        if (this.backgroundVideoQuad) {
-            this.backgroundVideoQuad.render(this.renderer);
-        }
-        this.renderer.render(this.simulatorScene, camera);
-        this.renderer.clearDepth();
+        return true;
     }
 }
 
@@ -11706,7 +12917,11 @@ class AudioListener extends Script {
     }
     async setupAudioCapture() {
         this.audioStream = await navigator.mediaDevices.getUserMedia({
-            audio: true,
+            audio: {
+                echoCancellation: this.options.echoCancellation,
+                noiseSuppression: this.options.noiseSuppression,
+                autoGainControl: this.options.autoGainControl,
+            },
             video: false,
         });
         const actualSampleRate = this.audioStream
@@ -11832,6 +13047,917 @@ class AudioListener extends Script {
     dispose() {
         this.stopCapture();
         super.dispose();
+    }
+}
+
+/**
+ * Base class for sound detector backends.
+ * Handles the orchestration of normalizing audio, running classifiers and creating results.
+ */
+class BaseDetectorBackend {
+    constructor(context) {
+        this.context = context;
+    }
+    /**
+     * Calculates debug information for the given audio data.
+     * @param audio - The normalized audio data.
+     * @returns An object containing RMS, buffer size, and sample rate.
+     */
+    populateDebugData(audio) {
+        let sumSquares = 0;
+        const audioData = audio.data;
+        for (let i = 0; i < audioData.length; i++) {
+            sumSquares += audioData[i] * audioData[i];
+        }
+        const rms = Math.sqrt(sumSquares / audioData.length);
+        return {
+            rms: rms,
+            bufferSize: audioData.length,
+            sampleRate: this.context.sampleRate,
+        };
+    }
+}
+
+let FilesetResolver;
+let AudioClassifier;
+// --- Attempt Dynamic Import ---
+async function loadMediaPipeModule() {
+    if (FilesetResolver && AudioClassifier) {
+        return;
+    }
+    try {
+        const mediapipeModule = await import('@mediapipe/tasks-audio');
+        FilesetResolver = mediapipeModule.FilesetResolver;
+        AudioClassifier = mediapipeModule.AudioClassifier;
+        console.log("'@mediapipe/tasks-audio' module loaded successfully.");
+    }
+    catch (error) {
+        console.error('Failed to load MediaPipe module:', error);
+        throw error;
+    }
+}
+class MediaPipeDetectorBackend extends BaseDetectorBackend {
+    constructor(context) {
+        super(context);
+        this.chunkSamples = 16000;
+        this.accumulatedAudio = [];
+        this.audioClassifier = null;
+        const mediapipeConfig = this.context.options.sounds.backendConfig.mediapipe;
+        this.chunkSamples = mediapipeConfig.chunkSamples;
+        this.tryInitializeAudioClassifier();
+    }
+    async tryInitializeAudioClassifier() {
+        if (this.audioClassifier)
+            return;
+        await loadMediaPipeModule();
+        const mediapipeConfig = this.context.options.sounds.backendConfig.mediapipe;
+        const audioTasks = await FilesetResolver.forAudioTasks(mediapipeConfig.wasmFilesUrl);
+        this.audioClassifier = await AudioClassifier.createFromOptions(audioTasks, {
+            baseOptions: { modelAssetPath: mediapipeConfig.modelAssetPath },
+        });
+    }
+    /**
+     * Normalizes audio data received as an ArrayBuffer (containing Int16 samples)
+     * into a Float32Array with values in the range [-1.0, 1.0] that the MediaPipe
+     * classifier can understand.
+     * @param arrayBuffer - The raw audio data buffer.
+     * @returns The normalized audio data.
+     */
+    normalizeAudio(arrayBuffer) {
+        const int16Data = new Int16Array(arrayBuffer);
+        const normalizedAudio = new Float32Array(int16Data.length);
+        for (let i = 0; i < int16Data.length; i++) {
+            normalizedAudio[i] = int16Data[i] / 32768.0;
+        }
+        return { data: normalizedAudio };
+    }
+    classify(audio) {
+        if (!this.audioClassifier)
+            return null;
+        const audioData = audio.data;
+        for (let i = 0; i < audioData.length; i++) {
+            this.accumulatedAudio.push(audioData[i]);
+        }
+        // chunkSamples is required because the MediaPipe AudioClassifier operates on
+        // discrete chunks of audio data. We accumulate samples until we reach this
+        // threshold before performing classification. If we do not accumulate enough samples,
+        // the MediaPipe AudioClassifier returns a classification of "Silence" which is not
+        // useful.
+        if (this.accumulatedAudio.length >= this.chunkSamples) {
+            const chunk = new Float32Array(this.accumulatedAudio.slice(0, this.chunkSamples));
+            this.accumulatedAudio = this.accumulatedAudio.slice(this.chunkSamples); // simple non-overlapping window
+            const mediaPipeResult = this.audioClassifier.classify(chunk, this.context.sampleRate);
+            const debugData = this.context.options.sounds.showDebugInfo
+                ? this.populateDebugData({ data: chunk })
+                : undefined;
+            return {
+                items: mediaPipeResult,
+                debug: debugData,
+            };
+        }
+        return null;
+    }
+}
+
+const DEFAULT_SAMPLE_RATE = 44000;
+/**
+ * Detects and classifies sounds in the user's environment using a specified backend.
+ * It queries an audio classifier model with the device mic input stream and returns
+ * classifications over specific time intervals along with confidence scores.
+ */
+class SoundDetector extends Script {
+    constructor() {
+        super(...arguments);
+        this._detectorBackends = new Map();
+        this._isListening = false;
+    }
+    static { this.dependencies = { options: WorldOptions }; }
+    get isListening() {
+        return this._isListening;
+    }
+    /**
+     * Initializes the SoundDetector.
+     */
+    async init({ options }) {
+        this.options = options;
+    }
+    /**
+     * Starts listening to the default mic input stream.
+     */
+    async startListening() {
+        if (this._isListening)
+            return;
+        if (!this.audioListener) {
+            this.audioListener = new AudioListener({
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true,
+            });
+        }
+        const sampleRate = this.audioListener?.audioContext?.sampleRate || DEFAULT_SAMPLE_RATE;
+        const backend = await this.getOrCreateDetectorBackend(sampleRate);
+        try {
+            this._isListening = true;
+            await this.audioListener.startCapture({
+                onAudioData: async (buffer) => {
+                    if (!backend)
+                        return;
+                    const normalizedAudio = backend.normalizeAudio(buffer);
+                    const audioClassifierResult = backend.classify(normalizedAudio);
+                    if (audioClassifierResult) {
+                        this.dispatchEvent({
+                            type: 'soundDetected',
+                            audioClassifierResult: audioClassifierResult,
+                        });
+                    }
+                },
+            });
+            console.log('SoundDetector: Started listening using AudioListener.');
+        }
+        catch (error) {
+            console.error('SoundDetector: Failed to start audio classification:', error);
+            this._isListening = false;
+        }
+    }
+    /**
+     * Stops listening and releases resources.
+     */
+    stopListening() {
+        if (!this._isListening)
+            return;
+        this.audioListener?.stopCapture();
+        this._isListening = false;
+        console.log('SoundDetector: Stopped listening.');
+    }
+    update(_timestamp, _frame) {
+        // No per-frame update logic needed, audio is handled asynchronously via streams.
+    }
+    getOrCreateDetectorBackend(sampleRate) {
+        if (!this.options) {
+            throw new Error('SoundDetector: Options not initialized. Call init first.');
+        }
+        const activeBackend = this.options.sounds.backendConfig.activeBackend;
+        let detectorBackendPromise = this._detectorBackends.get(activeBackend);
+        if (!detectorBackendPromise) {
+            detectorBackendPromise = (async () => {
+                switch (activeBackend) {
+                    case 'mediapipe':
+                        return new MediaPipeDetectorBackend({
+                            options: this.options,
+                            sampleRate,
+                        });
+                    default:
+                        throw new Error(`SoundDetector backend '${activeBackend}' is not supported.`);
+                }
+            })();
+            this._detectorBackends.set(activeBackend, detectorBackendPromise);
+        }
+        return detectorBackendPromise;
+    }
+}
+
+/**
+ * Temporary polyfill until Chrome 148 is rolled out more widely.
+ * Converts a Temporal.Duration or Temporal.DurationLike to milliseconds.
+ */
+function durationToMs(duration) {
+    if (typeof Temporal !== 'undefined') {
+        return Temporal.Duration.from(duration).total({ unit: 'millisecond' });
+    }
+    // If duration is a string (ISO 8601) and native Temporal failed/is absent, fallback to 0
+    if (typeof duration === 'string') {
+        return 0;
+    }
+    let ms = 0;
+    if (duration.milliseconds)
+        ms += duration.milliseconds;
+    if (duration.seconds)
+        ms += duration.seconds * 1000;
+    if (duration.minutes)
+        ms += duration.minutes * 60 * 1000;
+    if (duration.hours)
+        ms += duration.hours * 60 * 60 * 1000;
+    if (duration.days)
+        ms += duration.days * 24 * 60 * 60 * 1000;
+    if (duration.weeks)
+        ms += duration.weeks * 7 * 24 * 60 * 60 * 1000;
+    if (duration.months)
+        ms += duration.months * 30 * 24 * 60 * 60 * 1000;
+    if (duration.years)
+        ms += duration.years * 365 * 24 * 60 * 60 * 1000;
+    if (duration.microseconds)
+        ms += duration.microseconds / 1000;
+    if (duration.nanoseconds)
+        ms += duration.nanoseconds / 1000000;
+    return ms;
+}
+
+/**
+ * Places an object onto a suitable horizontal plane in the environment.
+ * It prioritizes planes in front of the user, prefers tables/elevated surfaces over floors,
+ * and ensures the object does not intersect other existing objects or other planes in the scene.
+ * If placement fails in the current frame, it continues retrying frame-by-frame until the timeout is reached.
+ *
+ * ### Algorithm Details:
+ * 1. **Filter Horizontal Surfaces**: Fetches all planes and filters for horizontal surfaces, completely skipping
+ *    any upside-down planes (whose normal y-component points downwards).
+ * 2. **Obstacle Gathering**: Traverses the active Three.js scene to identify visible collidable meshes, including
+ *    all other detected plane meshes (excluding the placement plane itself) and excluding user rigs/helpers.
+ * 3. **User-Centric Grid Sampling**: For each horizontal plane, projects the user's position onto the plane, restricts
+ *    the sampling range to a 3.0-meter radius bounding box centered around this projection, and grid-samples coordinates
+ *    strictly within the plane's polygon boundaries.
+ * 4. **Priority Scoring**: Assigns scores to sampled candidates, prioritizing elevated surfaces (tables over floors)
+ *    located comfortably in front of the user (0.4m to 3.0m range, pointing in camera look direction).
+ * 5. **Validation & Collision Check**: Evaluates candidates in descending score order, temporarily positioning and orienting
+ *    the object upright on the plane normal facing the user. Validates placement against the bounds of collidable obstacles.
+ * 6. **Frame Yielding & Retry**: If no candidates succeed in the current frame, yields to the next frame via `waitFrame`
+ *    and repeats the process until a clean spot is found or the timeout is reached.
+ *
+ * @param objectToPlace - The Three.js Object3D to place.
+ * @param camera - The current active camera (to evaluate user position and look direction).
+ * @param scene - The active scene containing all collidable obstacles.
+ * @param planes - The PlaneDetector instance providing detected real-world planes.
+ * @param meshes - The MeshDetector instance providing environmental mesh obstacles.
+ * @param waitFrame - The WaitFrame component to yield execution between frames.
+ * @param timeout - Timeout duration as a Temporal.Duration or Temporal.DurationLike object (defaults to 500ms).
+ * @param gridSteps - Number of steps along each axis for grid sampling candidate positions (defaults to 10).
+ * @returns A promise resolving to true if successfully placed, false otherwise.
+ */
+async function placeOnHorizontalSurface(objectToPlace, camera, scene, planes, meshes, waitFrame, timer, timeout, gridSteps) {
+    const timeoutSeconds = durationToMs(timeout) / 1000;
+    const startElapsed = timer.getElapsed();
+    while (true) {
+        // Check timeout at the start of each frame loop
+        const elapsed = timer.getElapsed() - startElapsed;
+        if (elapsed >= timeoutSeconds) {
+            return false;
+        }
+        if (!planes) {
+            await waitFrame.waitFrame();
+            continue;
+        }
+        const allPlanes = planes.get();
+        const horizontalPlanes = allPlanes.filter((plane) => {
+            const orientation = (plane.orientation || '').toLowerCase();
+            const label = (plane.label || '').toLowerCase();
+            const planeNormal = new THREE.Vector3(0, 1, 0)
+                .applyQuaternion(plane.quaternion)
+                .normalize();
+            // Skip upside-down planes (e.g., ceilings or undersides of tables)
+            if (planeNormal.y < 0) {
+                return false;
+            }
+            return (orientation === 'horizontal' ||
+                label === 'floor' ||
+                label === 'table' ||
+                label === 'desk' ||
+                label === 'counter' ||
+                label === 'horizontal');
+        });
+        if (horizontalPlanes.length === 0) {
+            await waitFrame.waitFrame();
+            continue;
+        }
+        // Gather all visible collidable obstacles from the scene graph
+        const collidableObjects = [];
+        scene.traverse((child) => {
+            if (!child.visible)
+                return;
+            if (child === objectToPlace || isDescendantOf(child, objectToPlace))
+                return;
+            if (child === planes)
+                return;
+            if (meshes && isDescendantOf(child, meshes))
+                return;
+            if (child === camera || child === scene)
+                return;
+            if (child.name &&
+                (child.name.includes('controller') ||
+                    child.name.includes('reticle') ||
+                    child.name.includes('helper'))) {
+                return;
+            }
+            if (child.isMesh) {
+                collidableObjects.push(child);
+            }
+        });
+        // Generate and score candidate positions on all horizontal planes
+        const candidates = [];
+        const cameraPos = camera.getWorldPosition(new THREE.Vector3());
+        const cameraForward = new THREE.Vector3(0, 0, -1)
+            .applyQuaternion(camera.quaternion)
+            .normalize();
+        for (const plane of horizontalPlanes) {
+            const polygon = getLocalPolygon(plane);
+            if (polygon.length === 0)
+                continue;
+            // Convert camera pos to local plane coordinates to center our grid around the user
+            const localCameraPos = plane.worldToLocal(cameraPos.clone());
+            const localProjected = new THREE.Vector2(localCameraPos.x, localCameraPos.z);
+            const polygonMinX = Math.min(...polygon.map((p) => p.x));
+            const polygonMaxX = Math.max(...polygon.map((p) => p.x));
+            const polygonMinY = Math.min(...polygon.map((p) => p.y));
+            const polygonMaxY = Math.max(...polygon.map((p) => p.y));
+            // Restrict search bounds to 3.0 meters radius around user's local projection
+            const searchRadius = 3.0;
+            const minX = Math.max(polygonMinX, localProjected.x - searchRadius);
+            const maxX = Math.min(polygonMaxX, localProjected.x + searchRadius);
+            const minY = Math.max(polygonMinY, localProjected.y - searchRadius);
+            const maxY = Math.min(polygonMaxY, localProjected.y + searchRadius);
+            // If restricted bounds are invalid, the plane is completely out of range
+            if (minX >= maxX || minY >= maxY) {
+                continue;
+            }
+            // Grid sampling within restricted bounding box
+            const localPoints = [];
+            // Try user's local projection point first if it is inside the polygon
+            if (isPointInPolygon(localProjected, polygon)) {
+                localPoints.push(localProjected);
+            }
+            // Try plane center if it lies within our restricted search bounds
+            const center = new THREE.Vector2((polygonMinX + polygonMaxX) / 2, (polygonMinY + polygonMaxY) / 2);
+            if (center.x >= minX &&
+                center.x <= maxX &&
+                center.y >= minY &&
+                center.y <= maxY) {
+                if (isPointInPolygon(center, polygon)) {
+                    localPoints.push(center);
+                }
+            }
+            for (let i = 0; i < gridSteps; i++) {
+                const x = minX + (i / (gridSteps - 1)) * (maxX - minX);
+                for (let j = 0; j < gridSteps; j++) {
+                    const z = minY + (j / (gridSteps - 1)) * (maxY - minY);
+                    const candidatePt = new THREE.Vector2(x, z);
+                    if (isPointInPolygon(candidatePt, polygon)) {
+                        localPoints.push(candidatePt);
+                    }
+                }
+            }
+            for (const localPt of localPoints) {
+                const localVec = new THREE.Vector3(localPt.x, 0, localPt.y);
+                const worldPt = plane.localToWorld(localVec);
+                // 1. Table vs Floor preference
+                const label = (plane.label || '').toLowerCase();
+                let semanticScore = 50;
+                if (label === 'table' || label === 'desk' || label === 'counter') {
+                    semanticScore = 100;
+                }
+                else if (label === 'floor') {
+                    semanticScore = 0;
+                }
+                // 2. Height preferences (tables are elevated horizontal planes)
+                const heightDiff = worldPt.y - cameraPos.y;
+                let heightScore = worldPt.y * 20;
+                if (heightDiff > 0) {
+                    heightScore -= heightDiff * 100; // penalize points above user camera height
+                }
+                // 3. User's look direction alignment (prioritize spots in front of user)
+                const toPoint = worldPt.clone().sub(cameraPos);
+                const distance = toPoint.length();
+                // Hard Distance Cutoff: Skip candidates too close or too far
+                if (distance < 0.4 || distance > 3.0) {
+                    continue;
+                }
+                const alignment = toPoint.normalize().dot(cameraForward);
+                let alignmentScore = -1e3; // heavy penalty for spots behind user
+                if (alignment >= 0) {
+                    alignmentScore = alignment * 50;
+                }
+                // 4. Comfortable interaction distance penalty
+                const distancePenalty = -Math.abs(distance - 1.5) * 10;
+                const score = semanticScore + heightScore + alignmentScore + distancePenalty;
+                candidates.push({
+                    plane,
+                    point: worldPt,
+                    score,
+                });
+            }
+        }
+        // Sort all candidates in descending order of their score
+        candidates.sort((a, b) => b.score - a.score);
+        let placed = false;
+        const origPosition = objectToPlace.position.clone();
+        const origQuaternion = objectToPlace.quaternion.clone();
+        for (const cand of candidates) {
+            // Verify timeout inside the validation loop to abort quickly if running slow
+            if (timer.getElapsed() - startElapsed >= timeoutSeconds) {
+                break;
+            }
+            // Temporarily place at origin to calculate bounding box offsets with rotation applied
+            objectToPlace.position.set(0, 0, 0);
+            // Orient the object upright on the plane normal and face the camera
+            const planeNormal = new THREE.Vector3(0, 1, 0)
+                .applyQuaternion(cand.plane.quaternion)
+                .normalize();
+            const forwardVector = cameraPos.clone().sub(cand.point);
+            forwardVector.projectOnPlane(planeNormal).normalize();
+            const rightVector = new THREE.Vector3()
+                .crossVectors(planeNormal, forwardVector)
+                .normalize();
+            const rotationMatrix = new THREE.Matrix4().makeBasis(rightVector, planeNormal, forwardVector);
+            objectToPlace.quaternion.setFromRotationMatrix(rotationMatrix);
+            objectToPlace.updateMatrixWorld(true);
+            // Calculate bounding box at the origin to find bottom offset along world Y axis
+            const tempBox = getObjectBoundingBox(objectToPlace);
+            const bottomOffset = -tempBox.min.y;
+            // Set final position, offsetting vertically so bottom of bbox aligns with horizontal plane
+            objectToPlace.position.copy(cand.point);
+            objectToPlace.position.y += bottomOffset;
+            objectToPlace.updateMatrixWorld(true);
+            // Calculate bounding box and verify intersections with scene obstacles
+            const objectBox = getObjectBoundingBox(objectToPlace);
+            // Shrink and shift collision box slightly to avoid grounding collisions with the table mesh
+            const collisionBox = objectBox.clone();
+            let collision = false;
+            const obstacleBox = new THREE.Box3();
+            for (const obstacle of collidableObjects) {
+                if (obstacle === cand.plane) {
+                    continue;
+                }
+                obstacle.updateMatrixWorld(true);
+                obstacleBox.setFromObject(obstacle);
+                if (collisionBox.intersectsBox(obstacleBox)) {
+                    collision = true;
+                    break;
+                }
+            }
+            if (!collision) {
+                placed = true;
+                break; // Successful placement!
+            }
+        }
+        if (placed) {
+            return true;
+        }
+        // Restore initial state if placement failed in the current frame
+        objectToPlace.position.copy(origPosition);
+        objectToPlace.quaternion.copy(origQuaternion);
+        // Yield execution until the next frame starts
+        await waitFrame.waitFrame();
+    }
+}
+// --- Helper Functions ---
+function getLocalPolygon(plane) {
+    if (plane.simulatorPlane) {
+        return plane.simulatorPlane.polygon;
+    }
+    else if (plane.xrPlane) {
+        return plane.xrPlane.polygon.map((p) => new THREE.Vector2(p.x, p.z));
+    }
+    return [];
+}
+function isPointInPolygon(point, polygon) {
+    let inside = false;
+    for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+        const xi = polygon[i].x, yi = polygon[i].y;
+        const xj = polygon[j].x, yj = polygon[j].y;
+        const intersect = yi > point.y !== yj > point.y &&
+            point.x < ((xj - xi) * (point.y - yi)) / (yj - yi) + xi;
+        if (intersect)
+            inside = !inside;
+    }
+    return inside;
+}
+function isDescendantOf(child, parent) {
+    let current = child.parent;
+    while (current) {
+        if (current === parent)
+            return true;
+        current = current.parent;
+    }
+    return false;
+}
+function getObjectBoundingBox(object) {
+    // If the object has a pre-calculated bounding box (e.g. ModelViewer), use it directly
+    if ('bbox' in object) {
+        const customBbox = object.bbox;
+        if (customBbox && !customBbox.isEmpty()) {
+            object.updateMatrixWorld(true);
+            return customBbox.clone().applyMatrix4(object.matrixWorld);
+        }
+    }
+    const box = new THREE.Box3();
+    function traverse(node) {
+        if (!node.visible)
+            return;
+        // Ignore the model viewer's platform, rotation cylinder, and control bar meshes
+        const name = node.constructor.name;
+        if (name === 'ModelViewerPlatform' ||
+            name === 'RotationRaycastMesh' ||
+            node.name === 'Platform') {
+            return;
+        }
+        const mesh = node;
+        if (mesh.isMesh) {
+            if (mesh.geometry) {
+                if (!mesh.geometry.boundingBox) {
+                    mesh.geometry.computeBoundingBox();
+                }
+                const tempBox = mesh.geometry.boundingBox.clone();
+                tempBox.applyMatrix4(mesh.matrixWorld);
+                box.union(tempBox);
+            }
+        }
+        for (const child of node.children) {
+            traverse(child);
+        }
+    }
+    object.updateMatrixWorld(true);
+    traverse(object);
+    return box;
+}
+
+// Import other modules as they are implemented in future.
+// import { LightEstimation } from '/lighting/LightEstimation.js';
+// import { HumanRecognizer } from '/human/HumanRecognizer.js';
+/**
+ * Manages all interactions with the real-world environment perceived by the XR
+ * device. This class abstracts the complexity of various perception APIs
+ * (Depth, Planes, Meshes, etc.) and provides a simple, event-driven interface
+ * for developers to use `this.world.depth.mesh`, `this.world.planes`.
+ */
+class World extends Script {
+    constructor() {
+        super(...arguments);
+        this.editorIcon = 'sensors';
+        /**
+         * A Three.js Raycaster for performing intersection tests.
+         */
+        this.raycaster = new THREE.Raycaster();
+        // Whether we need to initiate a room capture.
+        this.needsRoomCapture = false;
+        this.initializedPromise = new Promise((resolve) => {
+            this.resolveInitialized = resolve;
+        });
+    }
+    static { this.dependencies = {
+        options: WorldOptions,
+        camera: THREE.Camera,
+        waitFrame: WaitFrame,
+        timer: THREE.Timer,
+    }; }
+    /**
+     * Initializes the world-sensing modules based on the provided configuration.
+     * This method is called automatically by the XRCore.
+     */
+    async init({ options, camera, waitFrame, timer, }) {
+        this.options = options;
+        this.camera = camera;
+        this.waitFrame = waitFrame;
+        this.timer = timer;
+        if (!this.options || !this.options.enabled) {
+            this.resolveInitialized();
+            return;
+        }
+        this.needsRoomCapture = this.options.initiateRoomCapture;
+        // Conditionally initialize each perception module based on options.
+        if (this.options.planes.enabled) {
+            this.planes = new PlaneDetector();
+            this.add(this.planes);
+        }
+        if (this.options.objects.enabled) {
+            this.objects = new ObjectDetector();
+            this.add(this.objects);
+        }
+        if (this.options.meshes.enabled) {
+            this.meshes = new MeshDetector();
+            this.add(this.meshes);
+        }
+        if (this.options.sounds.enabled) {
+            this.sounds = new SoundDetector();
+            this.add(this.sounds);
+        }
+        // TODO: Initialize other modules as they are available & implemented.
+        /*
+    
+        if (this.options.lighting.enabled) {
+          this.lighting = new LightEstimation();
+        }
+    
+        if (this.options.humans.enabled) {
+          this.humans = new HumanRecognizer();
+        }
+        */
+        this.resolveInitialized();
+    }
+    /**
+     * Places an object at the reticle.
+     */
+    anchorObjectAtReticle(_object, _reticle) {
+        throw new Error('Method not implemented');
+    }
+    /**
+     * Updates all active world-sensing modules with the latest XRFrame data.
+     * This method is called automatically by the XRCore on each frame.
+     * @param _timestamp - The timestamp for the current frame.
+     * @param frame - The current XRFrame, containing environmental
+     * data.
+     * @override
+     */
+    update(_timestamp, frame) {
+        if (!this.options?.enabled || !frame) {
+            return;
+        }
+        if (this.needsRoomCapture && frame.session.initiateRoomCapture) {
+            this.needsRoomCapture = false;
+            frame.session.initiateRoomCapture();
+        }
+        this.meshes?.updateMeshes(_timestamp, frame);
+    }
+    /**
+     * Performs a raycast from a controller against detected real-world surfaces
+     * (currently planes) and places a 3D object at the intersection point,
+     * oriented to face the user.
+     *
+     * We recommend using /templates/3_depth/ to anchor objects based on
+     * depth mesh for mixed reality experience for accuracy. This function is
+     * design for demonstration purposes.
+     *
+     * @param objectToPlace - The object to position in the
+     * world.
+     * @param controller - The controller to use for raycasting.
+     * @returns True if the object was successfully placed, false
+     * otherwise.
+     */
+    placeOnSurface(objectToPlace, controller) {
+        if (!this.planes) {
+            console.warn('Cannot placeOnSurface: PlaneDetector is not enabled.');
+            return false;
+        }
+        const allPlanes = this.planes.get();
+        if (allPlanes.length === 0) {
+            return false; // No surfaces to cast against.
+        }
+        this.raycaster.setFromXRController(controller);
+        const intersections = this.raycaster.intersectObjects(allPlanes);
+        if (intersections.length > 0) {
+            const intersection = intersections[0];
+            placeObjectAtIntersectionFacingTarget(objectToPlace, intersection, this.camera);
+            return true;
+        }
+        return false;
+    }
+    /**
+     * Places an object onto a suitable horizontal plane in the environment.
+     * It prioritizes planes in front of the user, prefers tables/elevated surfaces over floors,
+     * and ensures the object does not intersect other existing objects or other planes in the scene.
+     * If placement fails in the current frame, it continues retrying frame-by-frame until the timeout is reached.
+     *
+     * @param objectToPlace - The Three.js Object3D to place.
+     * @param timeout - Optional timeout duration as a Temporal.Duration or Temporal.DurationLike object (defaults to 500ms).
+     * @param gridSteps - Optional number of steps along each axis for grid sampling candidate positions (defaults to 5).
+     * @returns A promise resolving to true if successfully placed, false otherwise.
+     */
+    async placeOnHorizontalSurface(objectToPlace, timeout = { milliseconds: 500 }, gridSteps = 9) {
+        // Wait for World script initialization to complete first
+        await this.initializedPromise;
+        // Walk up parent hierarchy to find the root THREE.Scene
+        let sceneObj = this.parent;
+        while (sceneObj && !(sceneObj instanceof THREE.Scene)) {
+            sceneObj = sceneObj.parent;
+        }
+        const rootScene = sceneObj || this;
+        return placeOnHorizontalSurface(objectToPlace, this.camera, rootScene, this.planes, this.meshes, this.waitFrame, this.timer, timeout, gridSteps);
+    }
+    /**
+     * Toggles the visibility of all debug visualizations for world features.
+     * @param visible - Whether the visualizations should be visible.
+     */
+    showDebugVisualizations(visible = true) {
+        this.planes?.showDebugVisualizations(visible);
+        this.objects?.showDebugVisualizations(visible);
+    }
+}
+
+class Simulator extends Script {
+    static { this.dependencies = {
+        simulatorOptions: SimulatorOptions,
+        input: Input,
+        timer: THREE.Timer,
+        camera: THREE.Camera,
+        renderer: THREE.WebGLRenderer,
+        scene: THREE.Scene,
+        registry: Registry,
+        options: Options,
+        depth: Depth,
+        world: World,
+    }; }
+    constructor(renderMainScene) {
+        super();
+        this.renderMainScene = renderMainScene;
+        this.editorIcon = 'simulation';
+        this.simulatorScene = new SimulatorScene();
+        this.simulatorWorld = new SimulatorWorld();
+        this.depth = new SimulatorDepth(this.simulatorScene);
+        // Controller poses relative to the camera.
+        this.simulatorControllerState = new SimulatorControllerState();
+        this.hands = new SimulatorHands(this.simulatorControllerState, this.simulatorScene);
+        this.simulatorUser = new SimulatorUser();
+        this.userInterface = new SimulatorInterface();
+        this.controls = new SimulatorControls(this.simulatorControllerState, this.hands, this.setStereoRenderMode.bind(this), this.userInterface);
+        this.renderDepthPass = false;
+        this.renderMode = SimulatorRenderMode.DEFAULT;
+        this.stereoCameras = [];
+        this.initialized = false;
+        this.renderSimulatorSceneToCanvasBound = this.renderSimulatorSceneToCanvas.bind(this);
+        this.add(this.simulatorUser);
+    }
+    async init({ simulatorOptions, input, timer, camera, renderer, scene, registry, options, depth, world, }) {
+        if (this.initialized)
+            return;
+        // Get optional dependencies from the registry.
+        const deviceCamera = registry.get(XRDeviceCamera);
+        this.options = simulatorOptions;
+        camera.position.copy(this.options.initialCameraPosition);
+        this.userInterface.init(simulatorOptions, this.controls, this.hands, input, this.simulatorScene);
+        renderer.autoClearColor = false;
+        await this.simulatorScene.init(simulatorOptions);
+        await this.simulatorWorld.init(options, world);
+        this.hands.init({ input });
+        this.controls.init({ camera, input, timer, renderer, simulatorOptions });
+        if (deviceCamera &&
+            !this.simulatorCamera &&
+            this.options.deviceCamera.enabled) {
+            this.simulatorCamera = new SimulatorCamera(renderer);
+            this.simulatorCamera.init();
+            deviceCamera.registerSimulatorCamera(this.simulatorCamera);
+        }
+        deviceCamera?.init();
+        if (options.depth.enabled) {
+            this.renderDepthPass = true;
+            this.depth.init(renderer, camera, depth);
+        }
+        scene.add(camera);
+        if (this.options.stereo.enabled) {
+            this.setupStereoCameras(camera);
+        }
+        const activeEnv = this.options.environments[this.options.activeEnvironmentIndex];
+        if (activeEnv?.videoPath) {
+            this.videoElement = document.createElement('video');
+            this.videoElement.src = activeEnv.videoPath;
+            this.videoElement.loop = true;
+            this.videoElement.muted = true;
+            this.videoElement.play().catch((e) => {
+                console.error(`Simulator: Failed to play video at ${activeEnv.videoPath}`, e);
+            });
+            this.videoElement.addEventListener('error', () => {
+                console.error(`Simulator: Error loading video at ${activeEnv.videoPath}`, this.videoElement?.error);
+            });
+            const videoTexture = new THREE.VideoTexture(this.videoElement);
+            videoTexture.colorSpace = THREE.SRGBColorSpace;
+            this.backgroundVideoQuad = new FullScreenQuad(new THREE.MeshBasicMaterial({ map: videoTexture }));
+        }
+        this.virtualSceneRenderTarget = new THREE.WebGLRenderTarget(renderer.domElement.width, renderer.domElement.height, { stencilBuffer: options.stencil });
+        const virtualSceneMaterial = new THREE.MeshBasicMaterial({
+            map: this.virtualSceneRenderTarget.texture,
+            transparent: true,
+        });
+        if (this.options.blendingMode === 'screen') {
+            virtualSceneMaterial.blending = THREE.CustomBlending;
+            virtualSceneMaterial.blendSrc = THREE.OneFactor;
+            virtualSceneMaterial.blendDst = THREE.OneMinusSrcColorFactor;
+            virtualSceneMaterial.blendEquation = THREE.AddEquation;
+        }
+        this.virtualSceneFullScreenQuad = new FullScreenQuad(virtualSceneMaterial);
+        this.renderer = renderer;
+        this.mainCamera = camera;
+        this.mainScene = scene;
+        this.registry = registry;
+        this.initialized = true;
+    }
+    simulatorUpdate() {
+        this.controls.update();
+        this.hands.update();
+        if (this.renderDepthPass) {
+            this.depth.update();
+        }
+    }
+    setStereoRenderMode(mode) {
+        if (!this.options.stereo.enabled)
+            return;
+        this.renderMode = mode;
+    }
+    setupStereoCameras(camera) {
+        const leftCamera = camera.clone();
+        const rightCamera = camera.clone();
+        leftCamera.layers.disableAll();
+        leftCamera.layers.enable(0);
+        leftCamera.layers.enable(1);
+        rightCamera.layers.disableAll();
+        rightCamera.layers.enable(0);
+        rightCamera.layers.enable(2);
+        leftCamera.position.set(-AVERAGE_IPD_METERS / 2, 0, 0);
+        rightCamera.position.set(AVERAGE_IPD_METERS / 2, 0, 0);
+        leftCamera.updateWorldMatrix(true, false);
+        rightCamera.updateWorldMatrix(true, false);
+        this.stereoCameras.length = 0;
+        this.stereoCameras.push(leftCamera, rightCamera);
+        camera.add(leftCamera, rightCamera);
+        this.setStereoRenderMode(SimulatorRenderMode.STEREO_LEFT);
+    }
+    onBeforeSimulatorSceneRender() {
+        this.simulatorCamera?.onBeforeSimulatorSceneRender(this.mainCamera, this.renderSimulatorSceneToCanvasBound);
+    }
+    onSimulatorSceneRendered() {
+        this.simulatorCamera?.onSimulatorSceneRendered();
+    }
+    getRenderCamera() {
+        return {
+            [SimulatorRenderMode.DEFAULT]: this.mainCamera,
+            [SimulatorRenderMode.STEREO_LEFT]: this.stereoCameras[0],
+            [SimulatorRenderMode.STEREO_RIGHT]: this.stereoCameras[1],
+        }[this.renderMode];
+    }
+    // Called by core when the simulator is running.
+    renderScene() {
+        if (!this.renderer)
+            return;
+        if (!this.options.renderToRenderTexture)
+            return;
+        // Allocate a new render target if the resolution changes.
+        if (this.virtualSceneRenderTarget.width != this.renderer.domElement.width ||
+            this.virtualSceneRenderTarget.height != this.renderer.domElement.height) {
+            const stencilEnabled = !!this.virtualSceneRenderTarget?.stencilBuffer;
+            this.virtualSceneRenderTarget.dispose();
+            this.virtualSceneRenderTarget = new THREE.WebGLRenderTarget(this.renderer.domElement.width, this.renderer.domElement.height, { stencilBuffer: stencilEnabled });
+            this.virtualSceneFullScreenQuad.material.map = this.virtualSceneRenderTarget.texture;
+        }
+        this.sparkRenderer =
+            this.sparkRenderer || this.registry.get(SparkRendererHolder)?.renderer;
+        if (this.sparkRenderer) {
+            this.sparkRenderer.encodeLinear = true;
+        }
+        this.renderer.setRenderTarget(this.virtualSceneRenderTarget);
+        this.renderer.clear();
+        this.renderMainScene(this.getRenderCamera());
+    }
+    // Renders the simulator scene onto the main canvas.
+    // Then composites the virtual render with the simulator render.
+    // Called by core after renderScene.
+    renderSimulatorScene() {
+        this.onBeforeSimulatorSceneRender();
+        this.renderSimulatorSceneToCanvas(this.getRenderCamera());
+        this.onSimulatorSceneRendered();
+        if (this.options.renderToRenderTexture) {
+            this.virtualSceneFullScreenQuad.render(this.renderer);
+        }
+        else {
+            // Temporary workaround since splats look faded when rendered to a render
+            // texture.
+            this.renderMainScene(this.getRenderCamera());
+        }
+    }
+    renderSimulatorSceneToCanvas(camera) {
+        if (this.sparkRenderer) {
+            this.sparkRenderer.encodeLinear = false;
+        }
+        this.renderer.setRenderTarget(null);
+        if (this.backgroundVideoQuad) {
+            this.backgroundVideoQuad.render(this.renderer);
+        }
+        this.renderer.render(this.simulatorScene, camera);
+        this.renderer.clearDepth();
     }
 }
 
@@ -12333,10 +14459,75 @@ class SpeechRecognizer extends Script {
         this.lastTranscript = '';
         this.lastConfidence = 0;
         this.playActivationSounds = false;
-        this.handleStartBound = this._handleStart.bind(this);
-        this.handleResultBound = this._handleResult.bind(this);
-        this.handleEndBound = this._handleEnd.bind(this);
-        this.handleErrorBound = this._handleError.bind(this);
+        // Private handler for the 'start' event
+        this._handleStart = () => {
+            console.debug('SpeechRecognizer: Listening started.');
+            this.dispatchEvent({ type: 'start' });
+            if (this.playActivationSounds) {
+                this.soundSynthesizer.playPresetTone('ACTIVATE');
+            }
+        };
+        // Private handler for the 'result' event
+        this._handleResult = (event) => {
+            let interimTranscript = '';
+            let finalTranscript = '';
+            let currentConfidence = 0;
+            for (let i = event.resultIndex; i < event.results.length; ++i) {
+                const result = event.results[i];
+                const transcript = result[0].transcript;
+                if (result.isFinal) {
+                    finalTranscript += transcript;
+                    currentConfidence = result[0].confidence;
+                }
+                else {
+                    interimTranscript += transcript;
+                }
+            }
+            this.lastTranscript = finalTranscript.trim() || interimTranscript.trim();
+            this.lastConfidence = currentConfidence;
+            this.lastCommand = undefined;
+            if (finalTranscript && this.options.commands.length > 0) {
+                const upperTranscript = finalTranscript.trim().toUpperCase();
+                for (const command of this.options.commands) {
+                    if (upperTranscript.includes(command.toUpperCase()) &&
+                        this.lastConfidence >= this.options.commandConfidenceThreshold) {
+                        this.lastCommand = command;
+                        console.debug(`SpeechRecognizer Detected Command: ${this.lastCommand}`);
+                        break;
+                    }
+                }
+            }
+            // Dispatch a 'result' event with all the relevant data
+            this.dispatchEvent({
+                type: 'result',
+                originalEvent: event,
+                transcript: this.lastTranscript,
+                confidence: this.lastConfidence,
+                command: this.lastCommand,
+                isFinal: !!finalTranscript,
+            });
+        };
+        // Private handler for the 'end' event (e.g., when silence is detected)
+        this._handleEnd = () => {
+            this.isListening = false;
+            this.dispatchEvent({ type: 'end' });
+            if (this.options.continuous &&
+                this.error !== 'aborted' &&
+                this.error !== 'no-speech') {
+                console.debug('SpeechRecognizer: Restarting continuous listening...');
+                setTimeout(() => this.start(), 100);
+            }
+            else if (this.playActivationSounds) {
+                this.soundSynthesizer.playPresetTone('DEACTIVATE');
+            }
+        };
+        // Private handler for the 'error' event
+        this._handleError = (event) => {
+            console.error('SpeechRecognizer: Error:', event.error);
+            this.error = event.error;
+            this.isListening = false;
+            this.dispatchEvent({ type: 'error', error: event.error });
+        };
     }
     init({ soundOptions }) {
         this.options = soundOptions.speechRecognizer;
@@ -12352,10 +14543,10 @@ class SpeechRecognizer extends Script {
         this.recognition.continuous = this.options.continuous;
         this.recognition.interimResults = this.options.interimResults;
         // Setup native event listeners
-        this.recognition.onstart = this.handleStartBound;
-        this.recognition.onresult = this.handleResultBound;
-        this.recognition.onend = this.handleEndBound;
-        this.recognition.onerror = this.handleErrorBound;
+        this.recognition.onstart = this._handleStart;
+        this.recognition.onresult = this._handleResult;
+        this.recognition.onend = this._handleEnd;
+        this.recognition.onerror = this._handleError;
     }
     onSimulatorStarted() {
         this.playActivationSounds = this.options.playSimulatorActivationSounds;
@@ -12408,75 +14599,6 @@ class SpeechRecognizer extends Script {
     getLastConfidence() {
         return this.lastConfidence;
     }
-    // Private handler for the 'start' event
-    _handleStart() {
-        console.debug('SpeechRecognizer: Listening started.');
-        this.dispatchEvent({ type: 'start' });
-        if (this.playActivationSounds) {
-            this.soundSynthesizer.playPresetTone('ACTIVATE');
-        }
-    }
-    // Private handler for the 'result' event
-    _handleResult(event) {
-        let interimTranscript = '';
-        let finalTranscript = '';
-        let currentConfidence = 0;
-        for (let i = event.resultIndex; i < event.results.length; ++i) {
-            const result = event.results[i];
-            const transcript = result[0].transcript;
-            if (result.isFinal) {
-                finalTranscript += transcript;
-                currentConfidence = result[0].confidence;
-            }
-            else {
-                interimTranscript += transcript;
-            }
-        }
-        this.lastTranscript = finalTranscript.trim() || interimTranscript.trim();
-        this.lastConfidence = currentConfidence;
-        this.lastCommand = undefined;
-        if (finalTranscript && this.options.commands.length > 0) {
-            const upperTranscript = finalTranscript.trim().toUpperCase();
-            for (const command of this.options.commands) {
-                if (upperTranscript.includes(command.toUpperCase()) &&
-                    this.lastConfidence >= this.options.commandConfidenceThreshold) {
-                    this.lastCommand = command;
-                    console.debug(`SpeechRecognizer Detected Command: ${this.lastCommand}`);
-                    break;
-                }
-            }
-        }
-        // Dispatch a 'result' event with all the relevant data
-        this.dispatchEvent({
-            type: 'result',
-            originalEvent: event,
-            transcript: this.lastTranscript,
-            confidence: this.lastConfidence,
-            command: this.lastCommand,
-            isFinal: !!finalTranscript,
-        });
-    }
-    // Private handler for the 'end' event (e.g., when silence is detected)
-    _handleEnd() {
-        this.isListening = false;
-        this.dispatchEvent({ type: 'end' });
-        if (this.options.continuous &&
-            this.error !== 'aborted' &&
-            this.error !== 'no-speech') {
-            console.debug('SpeechRecognizer: Restarting continuous listening...');
-            setTimeout(() => this.start(), 100);
-        }
-        else if (this.playActivationSounds) {
-            this.soundSynthesizer.playPresetTone('DEACTIVATE');
-        }
-    }
-    // Private handler for the 'error' event
-    _handleError(event) {
-        console.error('SpeechRecognizer: Error:', event.error);
-        this.error = event.error;
-        this.isListening = false;
-        this.dispatchEvent({ type: 'error', error: event.error });
-    }
     destroy() {
         this.stop();
         if (this.recognition) {
@@ -12503,13 +14625,31 @@ class SpeechSynthesizer extends Script {
         this.debug = false;
         this.specificVolume = 1.0;
         this.speechCategory = 'speech';
+        this.loadVoices = () => {
+            if (!this.synth)
+                return;
+            this.voices = this.synth.getVoices();
+            if (this.debug) {
+                console.log('SpeechSynthesizer: Voices loaded:', this.voices.length);
+            }
+            this.selectedVoice =
+                this.voices.find((voice) => voice.name.includes('Google') && voice.lang.startsWith('en')) || this.voices.find((voice) => voice.lang.startsWith('en'));
+            if (this.selectedVoice) {
+                if (this.debug) {
+                    console.log('SpeechSynthesizer: Selected voice:', this.selectedVoice.name);
+                }
+            }
+            else {
+                console.warn('SpeechSynthesizer: No suitable default voice found.');
+            }
+        };
         if (!this.synth) {
             console.error('SpeechSynthesizer: Speech Synthesis API not supported.');
         }
         else {
             this.loadVoices();
             if (this.synth.onvoiceschanged !== undefined) {
-                this.synth.onvoiceschanged = this.loadVoices.bind(this);
+                this.synth.onvoiceschanged = this.loadVoices;
             }
         }
         if (!this.categoryVolumes && this.synth) {
@@ -12520,24 +14660,6 @@ class SpeechSynthesizer extends Script {
         this.options = soundOptions.speechSynthesizer;
         if (this.debug) {
             console.log('SpeechSynthesizer initialized.');
-        }
-    }
-    loadVoices() {
-        if (!this.synth)
-            return;
-        this.voices = this.synth.getVoices();
-        if (this.debug) {
-            console.log('SpeechSynthesizer: Voices loaded:', this.voices.length);
-        }
-        this.selectedVoice =
-            this.voices.find((voice) => voice.name.includes('Google') && voice.lang.startsWith('en')) || this.voices.find((voice) => voice.lang.startsWith('en'));
-        if (this.selectedVoice) {
-            if (this.debug) {
-                console.log('SpeechSynthesizer: Selected voice:', this.selectedVoice.name);
-            }
-        }
-        else {
-            console.warn('SpeechSynthesizer: No suitable default voice found.');
         }
     }
     setVolume(level) {
@@ -13119,9 +15241,37 @@ class TextView extends View {
         this.lineHeight = 0;
         /** The total number of lines after text wrapping. */
         this.lineCount = 0;
-        this._onSyncCompleteBound = this.onSyncComplete.bind(this);
         this._initializeTextCalled = false;
         this._text = 'TextView';
+        /**
+         * Callback executed when Troika's text sync is complete.
+         * It captures layout data like total height and line count.
+         */
+        this.onSyncComplete = () => {
+            if (!this.useSDFText ||
+                !(this.textObj instanceof Text) ||
+                !this.textObj.textRenderInfo) {
+                return;
+            }
+            const caretPositions = this.textObj.textRenderInfo.caretPositions;
+            const numberOfChars = caretPositions.length / 4;
+            let lineCount = 0;
+            const firstBottom = numberOfChars > 0 ? caretPositions[0] : 0;
+            let lastBottom = 999999;
+            for (let i = 0; i < numberOfChars; i++) {
+                const bottom = caretPositions[i * 4 + 2];
+                const top = caretPositions[i * 4 + 3];
+                const lineHeight = top - bottom;
+                if (bottom < lastBottom - lineHeight / 2) {
+                    lineCount++;
+                    lastBottom = bottom;
+                }
+            }
+            this.lineHeight =
+                numberOfChars > 0 ? (firstBottom - lastBottom) / lineCount : 0;
+            this.lineCount = lineCount;
+            this.dispatchEvent({ type: 'synccomplete' });
+        };
         this.useSDFText = options.useSDFText ?? this.useSDFText;
         this.font = options.font ?? this.font;
         this.fontSize = options.fontSize ?? this.fontSize;
@@ -13239,42 +15389,40 @@ class TextView extends View {
             : (this.fontSize ?? 0.06);
         ctx.font = `${fontSize * resolution}px ${this.font}`;
         ctx.fillStyle = `#${getColorHex(this.fontColor).toString(16).padStart(6, '0')}`;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
+        // Use the configured textAlign and compute anchor positions accordingly.
+        const align = this.textAlign;
+        ctx.textAlign = align;
+        let drawX;
+        switch (align) {
+            case 'left':
+                drawX = 0;
+                break;
+            case 'right':
+                drawX = canvas.width;
+                break;
+            default:
+                drawX = canvas.width / 2;
+                break;
+        }
+        // Map anchorY to canvas textBaseline and Y position.
+        let baseline = 'middle';
+        let drawY = canvas.height / 2;
+        if (typeof this.anchorY === 'string') {
+            if (this.anchorY.startsWith('top')) {
+                baseline = 'top';
+                drawY = 0;
+            }
+            else if (this.anchorY.startsWith('bottom')) {
+                baseline = 'bottom';
+                drawY = canvas.height;
+            }
+        }
+        ctx.textBaseline = baseline;
         // TODO: add line-break for canvas-based text.
-        ctx.fillText(this.text, canvas.width / 2, canvas.height / 2);
+        ctx.fillText(this.text, drawX, drawY);
         if (this.textObj?.material.map) {
             this.textObj.material.map.needsUpdate = true;
         }
-    }
-    /**
-     * Callback executed when Troika's text sync is complete.
-     * It captures layout data like total height and line count.
-     */
-    onSyncComplete() {
-        if (!this.useSDFText ||
-            !(this.textObj instanceof Text) ||
-            !this.textObj.textRenderInfo) {
-            return;
-        }
-        const caretPositions = this.textObj.textRenderInfo.caretPositions;
-        const numberOfChars = caretPositions.length / 4;
-        let lineCount = 0;
-        const firstBottom = numberOfChars > 0 ? caretPositions[0] : 0;
-        let lastBottom = 999999;
-        for (let i = 0; i < numberOfChars; i++) {
-            const bottom = caretPositions[i * 4 + 2];
-            const top = caretPositions[i * 4 + 3];
-            const lineHeight = top - bottom;
-            if (bottom < lastBottom - lineHeight / 2) {
-                lineCount++;
-                lastBottom = bottom;
-            }
-        }
-        this.lineHeight =
-            numberOfChars > 0 ? (firstBottom - lastBottom) / lineCount : 0;
-        this.lineCount = lineCount;
-        this.dispatchEvent({ type: 'synccomplete' });
     }
     /**
      * Private method to perform the actual initialization after the async
@@ -13301,7 +15449,7 @@ class TextView extends View {
         if (this.useSDFText && Text && this.textObj instanceof Text) {
             this.textObj.addEventListener(
             // @ts-expect-error Missing type in Troika
-            'synccomplete', this._onSyncCompleteBound);
+            'synccomplete', this.onSyncComplete);
             if (this.imageOverlay) {
                 new THREE.TextureLoader().load(this.imageOverlay, (texture) => {
                     texture.colorSpace = THREE.SRGBColorSpace;
@@ -13334,7 +15482,7 @@ class TextView extends View {
             this.textObj instanceof Text) {
             this.textObj.removeEventListener(
             // @ts-expect-error Missing type in Troika
-            'synccomplete', this._onSyncCompleteBound);
+            'synccomplete', this.onSyncComplete);
         }
         super.dispose();
     }
@@ -13385,6 +15533,8 @@ class IconButton extends TextView {
         this.hoverOpacity = 0.2;
         /** The background opacity when the button is actively being pressed. */
         this.selectedOpacity = 0.4;
+        /** Indicates if the button is disabled and should not respond to interaction. */
+        this.disabled = false;
         /** The icon font file to use. Defaults to Material Icons. */
         this.font = MATERIAL_ICONS_FONT_FILE;
         // Applies all provided options to this instance.
@@ -13426,6 +15576,10 @@ class IconButton extends TextView {
     update() {
         if (!this.ux)
             return;
+        if (this.disabled) {
+            this.mesh.material.opacity = 0.1; // Dimmed opacity when disabled
+            return;
+        }
         if (this.ux.isHovered() || this.ux.isSelected()) {
             this.mesh.material.opacity = this.ux.isSelected()
                 ? this.selectedOpacity * this.opacity
@@ -13434,6 +15588,14 @@ class IconButton extends TextView {
         else {
             this.mesh.material.opacity = this.defaultOpacity * this.opacity;
         }
+    }
+    /**
+     * Overrides the parent's triggered behavior to block it when disabled.
+     */
+    onTriggered(id) {
+        if (this.disabled)
+            return;
+        super.onTriggered(id);
     }
     /**
      * Overrides the parent's private initialization method. This is called by the
@@ -14925,6 +17087,7 @@ class Panel extends View {
         this.mesh.setAspectRatio(this.aspectRatio);
         const parentAspectRatio = this.isRoot || !this.parent ? 1.0 : this.parent.aspectRatio;
         this.mesh.setWidthHeight(this.width * Math.max(parentAspectRatio, 1.0), this.height * Math.max(1.0 / parentAspectRatio, 1.0));
+        this.mesh.renderOrder = this.renderOrder;
     }
     /**
      * Gets the panel's width in meters.
@@ -15666,7 +17829,7 @@ class Core {
          */
         this.registry = new Registry();
         /**
-         * A clock for tracking time deltas. Call clock.getDeltaTime().
+         * A timer for tracking time deltas. Call timer.getDelta() or getDeltaTime().
          */
         this.timer = new THREE.Timer();
         /** Manages hand, mouse, gaze inputs. */
@@ -15683,9 +17846,9 @@ class Core {
         this.sound = new CoreSound();
         /** A container to hold all the systems in the scene hierarchy. */
         this.xrSystemsGroup = new XRSystems();
-        this.renderSceneBound = this.renderScene.bind(this);
+        this.renderSceneCallback = (cameraOverride) => this.renderScene(cameraOverride);
         /** Manages the desktop XR simulator. */
-        this.simulator = new Simulator(this.renderSceneBound);
+        this.simulator = new Simulator(this.renderSceneCallback);
         /** Manages drag-and-drop interactions. */
         this.dragManager = new DragManager();
         /** Manages drag-and-drop interactions. */
@@ -15704,6 +17867,88 @@ class Core {
             }
         });
         this.permissionsManager = new PermissionsManager();
+        /**
+         * The main update loop, called every frame by the renderer. It orchestrates
+         * all per-frame updates for subsystems and scripts.
+         *
+         * Order:
+         * 1. Depth
+         * 2. World Perception
+         * 3. Input / Reticles / UIs
+         * 4. Scripts
+         * @param time - The current time in milliseconds.
+         * @param frame - The WebXR frame object, if in an XR session.
+         */
+        this.update = (time, frame) => {
+            this.currentFrame = frame;
+            this.timer.update(time);
+            if (this.simulatorRunning) {
+                this.simulator.simulatorUpdate();
+            }
+            this.depth.update(frame);
+            // Update XR camera fallback textures.
+            if (this.deviceCamera?.isUsingXRCameraAccess) {
+                this.deviceCamera.updateXRCamera(frame);
+            }
+            if (this.lighting) {
+                this.lighting.update();
+            }
+            // Traverse the scene to find all scripts.
+            this.scriptsManager.syncScriptsWithScene(this.scene);
+            // Updates reticles and UIs.
+            this.scriptsManager.resetUX();
+            this.input.update();
+            // Updates scripts with user interactions.
+            for (const controller of this.input.controllers) {
+                if (controller.userData.selected) {
+                    this.scriptsManager.callSelecting(controller);
+                }
+            }
+            for (const controller of this.input.controllers) {
+                if (controller.userData.squeezing) {
+                    this.scriptsManager.callSqueezing(controller);
+                }
+            }
+            // Run callbacks that use wait frame.
+            this.waitFrame.onFrame();
+            // Updates renderings.
+            this.scriptsManager.update(time, frame);
+            this.renderSimulatorAndScene();
+            this.screenshotSynthesizer.onAfterRender(this.renderer, this.renderSceneCallback, this.deviceCamera);
+            if (this.simulatorRunning) {
+                this.simulator.renderSimulatorScene();
+            }
+        };
+        /**
+         * Advances the physics simulation by a fixed timestep and calls the
+         * corresponding physics update on all active scripts.
+         */
+        this.physicsStep = () => {
+            this.physics.physicsStep();
+            this.scriptsManager.physicsStep();
+        };
+        this.startSimulator = async () => {
+            this.xrButton?.domElement.remove();
+            this.xrSystemsGroup.add(this.simulator);
+            await this.scriptsManager.initScript(this.simulator);
+            this.onSimulatorStarted();
+        };
+        /**
+         * Lifecycle callback executed when an XR session ends. Notifies all active
+         * scripts.
+         */
+        this.onXRSessionEnded = () => {
+            this.scriptsManager.onXRSessionEnded();
+        };
+        /**
+         * Handles browser window resize events to keep the camera and renderer
+         * synchronized.
+         */
+        this.onWindowResize = () => {
+            this.camera.aspect = window.innerWidth / window.innerHeight;
+            this.camera.updateProjectionMatrix();
+            this.renderer.setSize(window.innerWidth, window.innerHeight);
+        };
         if (Core.instance) {
             return Core.instance;
         }
@@ -15741,9 +17986,11 @@ class Core {
         this.registry.register(options.simulator, SimulatorOptions);
         this.registry.register(options.world, WorldOptions);
         this.registry.register(options.world.meshes, MeshDetectionOptions);
+        this.registry.register(options.uikit, UIKitOptions);
         this.registry.register(options.ai, AIOptions);
         this.registry.register(options.sound, SoundOptions);
         this.registry.register(options.gestures, GestureRecognitionOptions);
+        this.registry.register(options.strokes, StrokeRecognitionOptions);
         if (options.transition.enabled) {
             this.transition = new XRTransition();
             this.user.add(this.transition);
@@ -15770,13 +18017,22 @@ class Core {
             return null;
         };
         this.registry.register(this.renderer);
+        if (options.uikit.enabled) {
+            this.renderer.localClippingEnabled = true;
+            if (options.uikit.reversePainterSortStable) {
+                this.renderer.setTransparentSort(options.uikit.reversePainterSortStable);
+            }
+        }
         this.renderer.xr.setReferenceSpaceType(options.referenceSpaceType);
+        // For desktop simulator:
+        window.addEventListener('resize', this.onWindowResize);
         if (!options.canvas) {
             const xrContainer = document.createElement('div');
             document.body.appendChild(xrContainer);
             xrContainer.appendChild(this.renderer.domElement);
         }
         this.options = options;
+        this.scriptsManager.catchExceptions = options.catchScriptExceptions;
         // Sets up controllers.
         if (options.controllers.enabled) {
             this.input.init({
@@ -15785,14 +18041,14 @@ class Core {
                 options: options,
                 renderer: this.renderer,
             });
-            this.input.bindSelectStart(this.scriptsManager.callSelectStartBound);
-            this.input.bindSelectEnd(this.scriptsManager.callSelectEndBound);
-            this.input.bindSelect(this.scriptsManager.callSelectBound);
-            this.input.bindSqueezeStart(this.scriptsManager.callSqueezeStartBound);
-            this.input.bindSqueezeEnd(this.scriptsManager.callSqueezeEndBound);
-            this.input.bindSqueeze(this.scriptsManager.callSqueezeBound);
-            this.input.bindKeyDown(this.scriptsManager.callKeyDownBound);
-            this.input.bindKeyUp(this.scriptsManager.callKeyUpBound);
+            this.input.bindSelectStart(this.scriptsManager.callSelectStart);
+            this.input.bindSelectEnd(this.scriptsManager.callSelectEnd);
+            this.input.bindSelect(this.scriptsManager.callSelect);
+            this.input.bindSqueezeStart(this.scriptsManager.callSqueezeStart);
+            this.input.bindSqueezeEnd(this.scriptsManager.callSqueezeEnd);
+            this.input.bindSqueeze(this.scriptsManager.callSqueeze);
+            this.input.bindKeyDown(this.scriptsManager.callKeyDown);
+            this.input.bindKeyUp(this.scriptsManager.callKeyUp);
         }
         // Sets up device camera.
         if (options.deviceCamera?.enabled) {
@@ -15814,10 +18070,8 @@ class Core {
             webXRRequiredFeatures.push('depth-sensing');
             webXRRequiredFeatures.push('local-floor');
             this.webXRSettings.depthSensing = {
-                usagePreference: [],
-                dataFormatPreference: [
-                    this.options.depth.useFloat32 ? 'float32' : 'luminance-alpha',
-                ],
+                usagePreference: options.depth.usagePreference,
+                dataFormatPreference: options.depth.dataFormatPreference,
                 depthTypeRequest: options.depth.depthTypeRequest,
                 matchDepthView: options.depth.matchDepthView,
             };
@@ -15827,8 +18081,10 @@ class Core {
             webXRRequiredFeatures.push('hand-tracking');
             this.user.hands = new Hands(this.input.hands);
             if (options.gestures.enabled) {
+                this.poseEstimation = options.gestures.poseEstimator;
                 this.gestureRecognition = new GestureRecognition();
                 this.xrSystemsGroup.add(this.gestureRecognition);
+                this.registry.register(this.poseEstimation);
                 this.registry.register(this.gestureRecognition);
             }
         }
@@ -15855,11 +18111,11 @@ class Core {
         }
         this.webXRSessionManager = new WebXRSessionManager(this.renderer, this.webXRSettings, options.xrSessionMode);
         this.webXRSessionManager.addEventListener(WebXRSessionEventType.SESSION_START, (event) => this.onXRSessionStarted(event.session));
-        this.webXRSessionManager.addEventListener(WebXRSessionEventType.SESSION_END, this.onXRSessionEnded.bind(this));
+        this.webXRSessionManager.addEventListener(WebXRSessionEventType.SESSION_END, this.onXRSessionEnded);
         // Sets up xrButton.
         let shouldAutostartSimulator = this.options.xrButton.alwaysAutostartSimulator;
         if (!shouldAutostartSimulator && options.xrButton.enabled) {
-            this.xrButton = new XRButton(this.webXRSessionManager, this.permissionsManager, options.xrButton?.appTitle, options.xrButton?.appDescription, options.xrButton?.startText, options.xrButton?.endText, options.xrButton?.invalidText, options.xrButton?.startSimulatorText, options.xrButton?.showEnterSimulatorButton, this.startSimulator.bind(this), options.permissions);
+            this.xrButton = new XRButton(this.webXRSessionManager, this.permissionsManager, options.xrButton?.appTitle, options.xrButton?.appDescription, options.xrButton?.startText, options.xrButton?.endText, options.xrButton?.invalidText, options.xrButton?.startSimulatorText, options.xrButton?.showEnterSimulatorButton, this.startSimulator, options.permissions);
             document.body.appendChild(this.xrButton.domElement);
         }
         this.webXRSessionManager.addEventListener(WebXRSessionEventType.UNSUPPORTED, () => {
@@ -15882,11 +18138,9 @@ class Core {
             await this.scriptsManager.initScript(this.ai);
         }
         await this.scriptsManager.syncScriptsWithScene(this.scene);
-        // For desktop only:
-        window.addEventListener('resize', this.onWindowResize.bind(this));
-        this.renderer.setAnimationLoop(this.update.bind(this));
+        this.renderer.setAnimationLoop(this.update);
         if (this.physics) {
-            setInterval(this.physicsStep.bind(this), 1000 * this.physics.timestep);
+            setInterval(this.physicsStep, 1000 * this.physics.timestep);
         }
         if (this.options.reticles.enabled) {
             this.input.addReticles();
@@ -15896,76 +18150,6 @@ class Core {
         }
         if (!loadingSpinnerManager.isLoading) {
             loadingSpinnerManager.hideSpinner();
-        }
-    }
-    /**
-     * The main update loop, called every frame by the renderer. It orchestrates
-     * all per-frame updates for subsystems and scripts.
-     *
-     * Order:
-     * 1. Depth
-     * 2. World Perception
-     * 3. Input / Reticles / UIs
-     * 4. Scripts
-     * @param time - The current time in milliseconds.
-     * @param frame - The WebXR frame object, if in an XR session.
-     */
-    update(time, frame) {
-        this.currentFrame = frame;
-        this.timer.update(time);
-        if (this.simulatorRunning) {
-            this.simulator.simulatorUpdate();
-        }
-        this.depth.update(frame);
-        // Update XR camera fallback textures.
-        if (this.deviceCamera?.isUsingXRCameraAccess) {
-            this.deviceCamera.updateXRCamera(frame);
-        }
-        if (this.lighting) {
-            this.lighting.update();
-        }
-        // Traverse the scene to find all scripts.
-        this.scriptsManager.syncScriptsWithScene(this.scene);
-        // Updates reticles and UIs.
-        for (const script of this.scriptsManager.scripts) {
-            script.ux.reset();
-        }
-        this.input.update();
-        // Updates scripts with user interactions.
-        for (const controller of this.input.controllers) {
-            if (controller.userData.selected) {
-                for (const script of this.scriptsManager.scripts) {
-                    script.onSelecting({ target: controller });
-                }
-            }
-        }
-        for (const controller of this.input.controllers) {
-            if (controller.userData.squeezing) {
-                for (const script of this.scriptsManager.scripts) {
-                    script.onSqueezing({ target: controller });
-                }
-            }
-        }
-        // Run callbacks that use wait frame.
-        this.waitFrame.onFrame();
-        // Updates renderings.
-        for (const script of this.scriptsManager.scripts) {
-            script.update(time, frame);
-        }
-        this.renderSimulatorAndScene();
-        this.screenshotSynthesizer.onAfterRender(this.renderer, this.renderSceneBound, this.deviceCamera);
-        if (this.simulatorRunning) {
-            this.simulator.renderSimulatorScene();
-        }
-    }
-    /**
-     * Advances the physics simulation by a fixed timestep and calls the
-     * corresponding physics update on all active scripts.
-     */
-    physicsStep() {
-        this.physics.physicsStep();
-        for (const script of this.scriptsManager.scripts) {
-            script.physicsStep();
         }
     }
     /**
@@ -15979,19 +18163,6 @@ class Core {
         }
         this.scriptsManager.onXRSessionStarted(session);
     }
-    async startSimulator() {
-        this.xrButton?.domElement.remove();
-        this.xrSystemsGroup.add(this.simulator);
-        await this.scriptsManager.initScript(this.simulator);
-        this.onSimulatorStarted();
-    }
-    /**
-     * Lifecycle callback executed when an XR session ends. Notifies all active
-     * scripts.
-     */
-    onXRSessionEnded() {
-        this.scriptsManager.onXRSessionEnded();
-    }
     /**
      * Lifecycle callback executed when the desktop simulator starts. Notifies
      * all active scripts.
@@ -16002,15 +18173,6 @@ class Core {
         if (this.lighting) {
             this.lighting.simulatorRunning = true;
         }
-    }
-    /**
-     * Handles browser window resize events to keep the camera and renderer
-     * synchronized.
-     */
-    onWindowResize() {
-        this.camera.aspect = window.innerWidth / window.innerHeight;
-        this.camera.updateProjectionMatrix();
-        this.renderer.setSize(window.innerWidth, window.innerHeight);
     }
     renderSimulatorAndScene() {
         if (this.simulatorRunning) {
@@ -16037,6 +18199,200 @@ class Core {
             }
         }
     }
+}
+
+/** Zero-weight viseme set; useful as a rest pose initialiser. */
+const ZERO_VISEME = Object.freeze({
+    jawOpen: 0,
+    aa: 0,
+    oo: 0,
+    oh: 0,
+    ee: 0,
+    consonant: 0,
+});
+
+/**
+ * StylizedFace: a tiny face primitive that any avatar can adopt. Draws
+ * a pair of static eyes and a parametric mouth onto a single canvas
+ * texture mapped to a forward-facing plane. The mouth morphs from a
+ * thin closed line into a wider oval as the speaker opens up; the eyes
+ * occasionally blink so the host head reads as alive.
+ *
+ * Extends `Script` so the xrblocks scripts manager calls `update()`
+ * every frame — that's how the blink loop keeps animating even when
+ * nothing is driving the mouth (no incoming lipsync stream, no
+ * `setVisemes()` calls). A face with neither audio nor blendshape feed
+ * is still a face that blinks.
+ *
+ * The plane sits flush with the front of the host head sphere on the
+ * local -Z side (WebXR head-forward convention) and never z-fights with
+ * the head itself. Construct, parent to a head pivot, done. To remove
+ * the face from the scene call `parent.remove(face)`; `dispose()`
+ * releases the canvas texture and geometry.
+ */
+class StylizedFace extends Script {
+    // Total duration of one blink (eyelid down + back up).
+    static { this.BLINK_MS = 140; }
+    constructor(opts = {}) {
+        super();
+        /** Last viseme weights applied; useful for testing and debugging. */
+        this.visemes = { ...ZERO_VISEME };
+        /** Computed lip metrics from the most recent setVisemes call. */
+        this.metrics = { width: 1, openHeight: 0 };
+        // Cached state from the last actual redraw, used to short-circuit
+        // setVisemes and update() when neither the lip shape nor the blink
+        // frame would produce a visually different texture. Avoids 256x256
+        // canvas redraws and CanvasTexture re-uploads while the face is at
+        // rest.
+        this.lastDrawnWidth = NaN;
+        this.lastDrawnOpenHeight = NaN;
+        this.lastDrawnBlinkScale = NaN;
+        // Schedule for the next blink (wall-clock ms via performance.now). The
+        // initial value is set in the constructor so the very first blink
+        // happens a few seconds after the face appears, not instantly.
+        this.nextBlinkAt = 0;
+        // Wall-clock ms when the current blink started. -Infinity means "no
+        // blink in progress".
+        this.blinkStartAt = -Infinity;
+        // Guards dispose() against being called more than once. xrblocks'
+        // ScriptsManager calls dispose on every Script removed from the
+        // scene graph; if a host (e.g. RemoteUserAvatar.dispose) also
+        // disposes manually, the double-call could double-free GPU
+        // resources or fire `dispose` events twice on listeners.
+        this._disposed = false;
+        this.headRadius = opts.headRadius ?? 0.1;
+        this.showEyes = opts.showEyes ?? true;
+        const size = opts.textureSize ?? 256;
+        this.canvas = document.createElement('canvas');
+        this.canvas.width = size;
+        this.canvas.height = size;
+        this.ctx = this.canvas.getContext('2d');
+        this.texture = new THREE.CanvasTexture(this.canvas);
+        this.texture.colorSpace = THREE.SRGBColorSpace;
+        this.texture.anisotropy = 4;
+        // Quad covers roughly the lower half of the host face.
+        const planeSize = this.headRadius * 1.4;
+        const geom = new THREE.PlaneGeometry(planeSize, planeSize);
+        const mat = new THREE.MeshBasicMaterial({
+            map: this.texture,
+            transparent: true,
+            depthWrite: false,
+        });
+        this.mesh = new THREE.Mesh(geom, mat);
+        // Flush with the head sphere on the face (-Z) side.
+        this.mesh.position.z = -this.headRadius * 1.001;
+        // PlaneGeometry's normal is +Z; rotate so it faces -Z (out the
+        // front of the head) instead of into the sphere.
+        this.mesh.rotation.y = Math.PI;
+        this.add(this.mesh);
+        this.nextBlinkAt = performance.now() + 2000 + Math.random() * 3000;
+        this.drawIfDirty();
+    }
+    /**
+     * Drive the mouth drawing from a viseme weight set. Cheap enough to
+     * call every frame; redraws and re-uploads the canvas texture only
+     * when the lip shape or blink frame would actually change pixels.
+     */
+    setVisemes(v) {
+        this.visemes = v;
+        this.metrics = computeMetrics(v);
+        this.drawIfDirty();
+    }
+    /**
+     * Frame hook — keeps the blink animation running independently of
+     * any external `setVisemes` driver. A face that isn't being driven
+     * (no lipsync stream, no blendshape feed) still blinks on its own.
+     */
+    update() {
+        this.drawIfDirty();
+    }
+    /** Free the texture, geometry, and material. Idempotent. */
+    dispose() {
+        if (this._disposed)
+            return;
+        this._disposed = true;
+        this.texture.dispose();
+        this.mesh.geometry.dispose();
+        this.mesh.material.dispose();
+    }
+    drawIfDirty() {
+        const blinkScale = this.showEyes
+            ? this.currentBlinkScale(performance.now())
+            : 1;
+        const EPS = 0.005;
+        if (Math.abs(this.metrics.width - this.lastDrawnWidth) < EPS &&
+            Math.abs(this.metrics.openHeight - this.lastDrawnOpenHeight) < EPS &&
+            Math.abs(blinkScale - this.lastDrawnBlinkScale) < EPS) {
+            return;
+        }
+        this.lastDrawnWidth = this.metrics.width;
+        this.lastDrawnOpenHeight = this.metrics.openHeight;
+        this.lastDrawnBlinkScale = blinkScale;
+        this.drawFace(blinkScale);
+        this.texture.needsUpdate = true;
+    }
+    drawFace(blinkScale) {
+        const ctx = this.ctx;
+        if (!ctx)
+            return;
+        const w = this.canvas.width;
+        const h = this.canvas.height;
+        ctx.clearRect(0, 0, w, h);
+        const m = this.metrics;
+        const cx = w / 2;
+        // Mouth sits slightly below canvas centre so eyes have room above
+        // it; if eyes are off, keep the mouth dead-centre.
+        const mouthY = this.showEyes ? h * 0.6 : h * 0.5;
+        const halfW = w * 0.22 * m.width;
+        // Small base height so the closed mouth is a thin line, growing
+        // into an oval as the speaker opens up.
+        const halfH = h * 0.012 + h * 0.13 * m.openHeight;
+        ctx.fillStyle = '#1a0808';
+        ctx.beginPath();
+        ctx.ellipse(cx, mouthY, halfW, halfH, 0, 0, Math.PI * 2);
+        ctx.fill();
+        if (this.showEyes) {
+            // Two static dark eye dots above the mouth so the host head
+            // sphere reads as a face. Eyes occasionally blink (eyelid squish
+            // on the Y axis) at a random interval; otherwise they're fixed so
+            // they don't compete with the mouth's motion signal.
+            const eyeY = h * 0.36;
+            const eyeOffset = w * 0.16;
+            const eyeR = w * 0.07;
+            for (const ex of [cx - eyeOffset, cx + eyeOffset]) {
+                ctx.beginPath();
+                ctx.ellipse(ex, eyeY, eyeR, eyeR * blinkScale, 0, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+    }
+    /**
+     * Returns the vertical scale (0..1) for the eyes at the given wall
+     * clock time. 1 = fully open; near 0 = mid-blink. Also advances the
+     * blink schedule as a side effect (starts a new blink when due).
+     */
+    currentBlinkScale(now) {
+        const t = (now - this.blinkStartAt) / StylizedFace.BLINK_MS;
+        if (t >= 0 && t < 1) {
+            // Triangle wave 0..1..0 across the blink; scale 1 - 0.95 * tri
+            // means eyelid drops to ~5% open at midpoint, never fully zero so
+            // the eye doesn't visually disappear.
+            const tri = 4 * t * (1 - t);
+            return 1 - 0.95 * tri;
+        }
+        if (now >= this.nextBlinkAt) {
+            this.blinkStartAt = now;
+            // Random interval between blinks: 2.5–6.5 seconds, in the
+            // ballpark of natural human blink rate (15–20 per minute).
+            this.nextBlinkAt = now + 2500 + Math.random() * 4000;
+        }
+        return 1;
+    }
+}
+function computeMetrics(v) {
+    const openHeight = clamp$1(v.jawOpen * 0.9 + v.aa * 0.5 + v.oh * 0.5, 0, 1);
+    const width = clamp$1(1 + v.ee * 0.45 - v.oo * 0.55 - v.oh * 0.2, 0.35, 1.4);
+    return { width, openHeight };
 }
 
 class OcclusionUtils {
@@ -16085,6 +18441,311 @@ class OcclusionUtils {
             'float occlusion_value = clamp(occlusion_sample.r, 0.0, 1.0);',
             'diffuseColor.a *= occlusionEnabled ? occlusion_value : 1.0;',
         ].join('\n'));
+    }
+}
+
+/**
+ * StrokeRecognizer is a framework Script that handles recording hand stroke gestures
+ * and recognizing them as geometric shapes using a configured provider.
+ * It listens to gesture events and tracks specified hand joints to record the path.
+ */
+class StrokeRecognizer extends Script {
+    constructor() {
+        super(...arguments);
+        this.capturedPoints = [];
+        this.isActive = false;
+        this.isRecording = false;
+        this.gestureStartTime = 0;
+        this.gestureEndTime = 0;
+        this.activeHand = Handedness.LEFT;
+    }
+    static { this.dependencies = {
+        scene: THREE.Scene,
+        camera: THREE.Camera,
+        user: User,
+        options: StrokeRecognitionOptions,
+    }; }
+    init({ scene, camera, user, options, }) {
+        this.scene = scene;
+        this.camera = camera;
+        this.user = user;
+        this.options = options;
+        this.configureProvider();
+        if (!this.options.enabled) {
+            console.info('StrokeRecognizer initialized but disabled. Call options.enableStrokes() to activate.');
+        }
+    }
+    dispose() { }
+    configureProvider() {
+        const provider = this.options.providerConfig.provider;
+        switch (provider) {
+            case 'onedollar':
+                this.recognizer = new OneDollarUnistrokeRecognizer({
+                    camera: this.camera,
+                    scene: this.scene,
+                    supportedShapes: this.options.providerConfig.onedollar.supportedShapes,
+                });
+                break;
+            default:
+                console.warn(`StrokeRecognizer: provider '${provider}' is unknown; falling back to 'onedollar'.`);
+                this.recognizer = new OneDollarUnistrokeRecognizer({
+                    camera: this.camera,
+                    scene: this.scene,
+                    supportedShapes: this.options.providerConfig.onedollar.supportedShapes,
+                });
+                break;
+        }
+    }
+    /**
+     * Activates the stroke recognizer, enabling gesture tracking and recording.
+     */
+    activate() {
+        this.isActive = true;
+    }
+    /**
+     * Deactivates the stroke recognizer and clears any captured points.
+     */
+    deactivate() {
+        this.isActive = false;
+        this.clearPoints();
+    }
+    /**
+     * Clears the list of captured points.
+     */
+    clearPoints() {
+        this.capturedPoints = [];
+    }
+    /**
+     * Adds a point to the current stroke if the maximum point limit has not been reached.
+     * @param pos - The world position of the point.
+     * @param timestamp - The timestamp when the point was captured.
+     */
+    addPoint(pos, timestamp) {
+        if (this.capturedPoints.length < this.options.maxPoints) {
+            this.capturedPoints.push({ pos: pos.clone(), timestamp: timestamp });
+        }
+    }
+    /**
+     * Main update loop. Handles recording points during an active gesture
+     * and triggers recognition when the gesture ends.
+     */
+    update() {
+        // Ignore updates if the feature is disabled or recognizer is not active.
+        if (!this.options.enabled)
+            return;
+        if (!this.isActive)
+            return;
+        const currentTime = Date.now() / 1000; // Use seconds
+        // Check if the user is currently pinching (simulated or physical).
+        if (this.user.isSelecting?.()) {
+            // If this is the first frame of the pinch, initialize recording state.
+            if (!this.isRecording) {
+                this.isRecording = true;
+                this.gestureStartTime = currentTime;
+                this.clearPoints();
+                // Identify which hand is actively pinching at the start of the gesture.
+                this.activeHand = Handedness.LEFT;
+                if (this.user.isSelecting?.(Handedness.LEFT))
+                    this.activeHand = Handedness.LEFT;
+                else if (this.user.isSelecting?.(Handedness.RIGHT))
+                    this.activeHand = Handedness.RIGHT;
+                this.dispatchEvent({ type: 'unistrokestart', target: this, detail: {} });
+            }
+            const elapsedSincePinch = currentTime - this.gestureStartTime;
+            // Wait for the start delay to avoid capturing the initial jitter of the pinch motion.
+            if (elapsedSincePinch > this.options.startDelay) {
+                // Retrieve the configured joint for tracking (e.g., index finger tip).
+                const trackingJoint = this.user.hands?.getJoint(this.options.joint, this.activeHand);
+                if (trackingJoint) {
+                    const worldPos = new THREE.Vector3();
+                    trackingJoint.getWorldPosition(worldPos);
+                    // Capture the point and notify listeners.
+                    this.addPoint(worldPos, currentTime);
+                    this.dispatchEvent({
+                        type: 'unistrokeupdate',
+                        target: this,
+                        detail: { point: worldPos },
+                    });
+                }
+            }
+        }
+        else {
+            // If the user stopped pinching while we were recording, finalize the gesture.
+            if (this.isRecording) {
+                this.isRecording = false;
+                this.gestureEndTime = currentTime;
+                // Perform recognition and notify listeners of the result.
+                const result = this.recognizeGesture();
+                this.dispatchEvent({
+                    type: 'unistrokeend',
+                    target: this,
+                    detail: result ? { result } : {},
+                });
+            }
+        }
+    }
+    /**
+     * Calculates the best-fitting plane for a set of 3D points using a simple 3-point estimator.
+     * Falls back to camera plane if points are collinear.
+     */
+    calculateBestFittingPlane(points) {
+        if (points.length < 3)
+            return null;
+        const p0 = points[0];
+        // Find point furthest from p0
+        let p1 = p0;
+        let maxDistSq = 0;
+        for (const p of points) {
+            const d = p.distanceToSquared(p0);
+            if (d > maxDistSq) {
+                maxDistSq = d;
+                p1 = p;
+            }
+        }
+        if (maxDistSq < 0.0001)
+            return null; // All points are the same
+        // Find point furthest from line p0-p1
+        let p2 = p0;
+        let maxLineDistSq = 0;
+        const line = new THREE.Line3(p0, p1);
+        const closestPoint = new THREE.Vector3();
+        for (const p of points) {
+            line.closestPointToPoint(p, false, closestPoint);
+            const distSq = p.distanceToSquared(closestPoint);
+            if (distSq > maxLineDistSq) {
+                maxLineDistSq = distSq;
+                p2 = p;
+            }
+        }
+        // If maxLineDistSq is very small, points are collinear
+        if (maxLineDistSq < 0.0001) {
+            return null;
+        }
+        const origin = p0;
+        const u = new THREE.Vector3().subVectors(p1, p0).normalize();
+        // Use Three.Plane to calculate the normal from 3 coplanar points
+        const plane = new THREE.Plane().setFromCoplanarPoints(p0, p1, p2);
+        const v = new THREE.Vector3().crossVectors(plane.normal, u).normalize();
+        return { origin, u, v };
+    }
+    /**
+     * Filters captured points, projects them to a 2D plane, and calls the backend recognizer.
+     * Uses best-fitting plane if possible, otherwise falls back to camera viewport plane.
+     * @returns The recognition result or null if not enough points were captured.
+     */
+    recognizeGesture() {
+        const cutoffTime = this.gestureEndTime - this.options.endDelay;
+        const filteredPoints = this.capturedPoints.filter((p) => p.timestamp <= cutoffTime);
+        if (filteredPoints.length > 10) {
+            const points3D = filteredPoints.map((p) => p.pos);
+            const bestFittingPlane = this.calculateBestFittingPlane(points3D);
+            let points2D;
+            if (bestFittingPlane) {
+                points2D = points3D.map((p) => {
+                    const v = new THREE.Vector3().subVectors(p, bestFittingPlane.origin);
+                    return { x: v.dot(bestFittingPlane.u), y: v.dot(bestFittingPlane.v) };
+                });
+            }
+            else {
+                // Fallback to camera plane projection
+                points2D = points3D.map((p) => {
+                    const localPos = p
+                        .clone()
+                        .applyMatrix4(this.camera.matrixWorldInverse);
+                    return { x: localPos.x, y: localPos.y };
+                });
+            }
+            return this.recognizer.recognize(points2D);
+        }
+        return null;
+    }
+}
+
+const MEDIAPIPE_JOINT_INDEX = {
+    wrist: 0,
+    'thumb-metacarpal': 1,
+    'thumb-phalanx-proximal': 2,
+    'thumb-phalanx-distal': 3,
+    'thumb-tip': 4,
+    'index-finger-phalanx-proximal': 5,
+    'index-finger-phalanx-intermediate': 6,
+    'index-finger-phalanx-distal': 7,
+    'index-finger-tip': 8,
+    'middle-finger-phalanx-proximal': 9,
+    'middle-finger-phalanx-intermediate': 10,
+    'middle-finger-phalanx-distal': 11,
+    'middle-finger-tip': 12,
+    'ring-finger-phalanx-proximal': 13,
+    'ring-finger-phalanx-intermediate': 14,
+    'ring-finger-phalanx-distal': 15,
+    'ring-finger-tip': 16,
+    'pinky-finger-phalanx-proximal': 17,
+    'pinky-finger-phalanx-intermediate': 18,
+    'pinky-finger-phalanx-distal': 19,
+    'pinky-finger-tip': 20,
+};
+const ESTIMATED_METACARPALS = {
+    'index-finger-metacarpal': 5,
+    'middle-finger-metacarpal': 9,
+    'ring-finger-metacarpal': 13,
+    'pinky-finger-metacarpal': 17,
+};
+const METACARPAL_INTERPOLATION = 0.65;
+class MediaPipeHandContext {
+    constructor(handedness, handLabel, landmarks) {
+        this.handedness = handedness;
+        this.handLabel = handLabel;
+        this.joints = createJointMapFromLandmarks(landmarks);
+    }
+    getJoint(jointName) {
+        return this.joints.get(jointName);
+    }
+}
+class MediaPipeHandPoseEstimator {
+    async init() { }
+    getHandContext(_handedness) {
+        // TODO: map MediaPipe landmarks into canonical XR Blocks JointName positions.
+        return null;
+    }
+    getHandContexts() {
+        // TODO: return canonical contexts once MediaPipe landmark mapping is wired.
+        return {};
+    }
+}
+function createJointMapFromLandmarks(landmarks) {
+    const joints = new Map();
+    for (const [jointName, index] of Object.entries(MEDIAPIPE_JOINT_INDEX)) {
+        const landmark = landmarks[index];
+        if (!landmark)
+            continue;
+        joints.set(jointName, landmarkToVector(landmark));
+    }
+    const wristLandmark = landmarks[0];
+    if (!wristLandmark)
+        return joints;
+    for (const [jointName, index] of Object.entries(ESTIMATED_METACARPALS)) {
+        const knuckleLandmark = landmarks[index];
+        if (!knuckleLandmark)
+            continue;
+        const wrist = landmarkToVector(wristLandmark);
+        const knuckle = landmarkToVector(knuckleLandmark);
+        joints.set(jointName, wrist.lerp(knuckle, METACARPAL_INTERPOLATION));
+    }
+    return joints;
+}
+function landmarkToVector(landmark) {
+    return new THREE.Vector3(0.5 - landmark.x, 0.5 - landmark.y, -(landmark.z ?? 0));
+}
+
+class TensorFlowHandPoseEstimator {
+    async init() { }
+    getHandContext(_handedness) {
+        // TODO: map TensorFlow hand-pose outputs into canonical XR Blocks JointName positions.
+        return null;
+    }
+    getHandContexts() {
+        // TODO: return canonical contexts once TensorFlow output mapping is wired.
+        return {};
     }
 }
 
@@ -16327,7 +18988,7 @@ class WalkTowardsPanelAction extends SimulatorUserAction {
             .copy(targetWorldPosition)
             .addScaledVector(cameraToTargetVector, -NEAR_TARGET_THRESHOLD);
         const cameraToCloseToTarget = closeToTargetPosition.sub(camera.position);
-        const movementDistance = clamp(cameraToCloseToTarget.length(), 0, MOVEMENT_SPEED_METERS_PER_SECOND * deltaTime);
+        const movementDistance = clamp$1(cameraToCloseToTarget.length(), 0, MOVEMENT_SPEED_METERS_PER_SECOND * deltaTime);
         camera.position.addScaledVector(cameraToCloseToTarget, movementDistance / cameraToCloseToTarget.length());
     }
     async play({ simulatorUser, journeyId, waitFrame, }) {
@@ -16637,9 +19298,10 @@ class MaterialSymbolsView extends View {
         });
         this.loadingSvgPath = undefined;
         this.loadedSvgPath = svgPath;
-        const [viewMinX, viewMinY, viewWidth, viewHeight] = 
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        svgData.xml.attributes.viewBox.value.split(' ');
+        const viewBox = svgData.xml.getAttribute('viewBox');
+        const [viewMinX, viewMinY, viewWidth, viewHeight] = viewBox
+            .split(' ')
+            .map(Number);
         const paths = svgData.paths;
         const group = new THREE.Group();
         const scale = 1 / Math.max(viewWidth, viewHeight);
@@ -16710,7 +19372,7 @@ class TextScrollerState extends Script {
         const deltaTime = this.timer.getDelta();
         const deltaLines = this.scrollSpeedLinesPerSecond * deltaTime;
         const distanceToTargetLine = this.targetLine - this.currentLine;
-        this.currentLine += clamp(distanceToTargetLine, -deltaLines, deltaLines);
+        this.currentLine += clamp$1(distanceToTargetLine, -deltaLines, deltaLines);
     }
 }
 
@@ -16757,10 +19419,10 @@ class PagerState extends Script {
         const velocity = Math.sin(Math.PI * (this.currentPage % 1));
         const direction = (this.currentPage % 1 >= 0.5 ? 1 : -1) *
             Number(Math.abs(velocity) > 0.01);
-        const targetPage = clamp(this.currentPage + direction, 0, this.pages - 1);
+        const targetPage = clamp$1(this.currentPage + direction, 0, this.pages - 1);
         const remainingDelta = Math.abs(targetPage - this.currentPage);
         this.currentPage +=
-            direction * clamp(velocity * this.timer.getDelta(), 0, remainingDelta);
+            direction * clamp$1(velocity * this.timer.getDelta(), 0, remainingDelta);
     }
     addPage() {
         return this.pages++;
@@ -16895,7 +19557,7 @@ class Pager extends View {
                 this.continuousScrolling && this.state.pages > 1
                     ? (this.selectStartPage - deltaPage + this.state.pages) %
                         this.state.pages
-                    : clamp(this.selectStartPage - deltaPage, 0, this.state.pages - 1);
+                    : clamp$1(this.selectStartPage - deltaPage, 0, this.state.pages - 1);
         }
     }
     onObjectSelectEnd(event) {
@@ -16962,8 +19624,17 @@ class VerticalPager extends Pager {
 class ScrollingTroikaTextView extends View {
     constructor({ text = 'ScrollingTroikaTextView', textAlign = 'left', scrollerState = new TextScrollerState(), fontSize = 0.06, } = {}) {
         super();
-        this.onTextSyncCompleteBound = this.onTextSyncComplete.bind(this);
         this.currentText = '';
+        this.onTextSyncComplete = () => {
+            if (this.textView.lineCount > 0) {
+                this.textView.y =
+                    -0.5 + this.textView.lineHeight * this.textView.aspectRatio;
+                this.textView.updateLayout();
+                this.scrollerState.lineCount = this.textView.lineCount;
+                this.scrollerState.targetLine = this.textView.lineCount - 1;
+                this.clipToLineHeight();
+            }
+        };
         this.scrollerState = scrollerState || new TextScrollerState();
         this.pager = new VerticalPager();
         this.textViewWrapper = new View();
@@ -16976,7 +19647,7 @@ class ScrollingTroikaTextView extends View {
             anchorY: 0,
         });
         this.textView.x = -0.5;
-        this.textView.addEventListener('synccomplete', this.onTextSyncCompleteBound);
+        this.textView.addEventListener('synccomplete', this.onTextSyncComplete);
         this.textViewWrapper.add(this.textView);
         this.add(this.scrollerState);
         this.add(this.pager);
@@ -16994,16 +19665,6 @@ class ScrollingTroikaTextView extends View {
     setText(text) {
         this.currentText = text;
         this.textView.setText(this.currentText);
-    }
-    onTextSyncComplete() {
-        if (this.textView.lineCount > 0) {
-            this.textView.y =
-                -0.5 + this.textView.lineHeight * this.textView.aspectRatio;
-            this.textView.updateLayout();
-            this.scrollerState.lineCount = this.textView.lineCount;
-            this.scrollerState.targetLine = this.textView.lineCount - 1;
-            this.clipToLineHeight();
-        }
     }
     clipToLineHeight() {
         const lineHeight = this.textView.lineHeight * this.textView.aspectRatio;
@@ -17064,7 +19725,7 @@ class FreestandingSlider {
             .copy(position)
             .sub(this.initialPosition)
             .applyQuaternion(this.initialRotationInverse);
-        return clamp(this.startingValue + this.scale * positionDiff.x, this.minValue, this.maxValue);
+        return clamp$1(this.startingValue + this.scale * positionDiff.x, this.minValue, this.maxValue);
     }
     /**
      * Calculates the slider value based on a new world rotation (for mouse
@@ -17075,7 +19736,7 @@ class FreestandingSlider {
     getValueFromRotation(rotation) {
         rotationDiff.copy(rotation).multiply(this.initialRotationInverse);
         euler.setFromQuaternion(rotationDiff, 'YXZ');
-        return clamp(this.startingValue + this.rotationScale * euler.y, this.minValue, this.maxValue);
+        return clamp$1(this.startingValue + this.rotationScale * euler.y, this.minValue, this.maxValue);
     }
     /**
      * A polymorphic method that automatically chooses the correct calculation
@@ -17433,6 +20094,7 @@ class ModelViewer extends Script {
         scene: THREE.Scene,
         renderer: THREE.WebGLRenderer,
         registry: Registry,
+        timer: THREE.Timer,
     }; }
     constructor({ castShadow = true, receiveShadow = true, raycastToChildren = false, }) {
         super();
@@ -17445,20 +20107,20 @@ class ModelViewer extends Script {
         this.initialScale = new THREE.Vector3().setScalar(1);
         this.startAnimationOnLoad = true;
         this.clipActions = [];
-        this.clock = new THREE.Clock();
+        this.bbox = new THREE.Box3();
         this.hoveringControllers = new Set();
         this.occludableShaders = new Set();
-        this.bbox = new THREE.Box3();
         this.castShadow = castShadow;
         this.receiveShadow = receiveShadow;
         this.raycastToChildren = raycastToChildren;
     }
-    async init({ camera, depth, scene, renderer, registry, }) {
+    async init({ camera, depth, scene, renderer, registry, timer, }) {
         this.camera = camera;
         this.depth = depth;
         this.scene = scene;
         this.renderer = renderer;
         this.registry = registry;
+        this.timer = timer;
         for (const shader of this.occludableShaders) {
             this.depth.occludableShaders.add(shader);
         }
@@ -17672,7 +20334,7 @@ class ModelViewer extends Script {
         this.add(this.platform);
     }
     update() {
-        const delta = this.clock.getDelta();
+        const delta = this.timer.getDelta();
         if (this.animationMixer) {
             this.animationMixer.update(delta);
         }
@@ -17810,7 +20472,7 @@ class ModelViewer extends Script {
     }
     async createSparkRendererIfNeeded() {
         // We insert our own SparkRenderer configured to show Gaussians up to
-        // Math.sqrt(5) standard deviations from the center, recommended for XR.
+        // Math.sqrt(4) standard deviations from the center, recommended for XR.
         const { SparkRenderer } = await import('@sparkjsdev/spark');
         let sparkRendererExists = false;
         this.scene.traverse((child) => {
@@ -17819,7 +20481,7 @@ class ModelViewer extends Script {
         if (!sparkRendererExists) {
             const sparkRenderer = new SparkRenderer({
                 renderer: this.renderer,
-                maxStdDev: Math.sqrt(5),
+                maxStdDev: Math.sqrt(4),
             });
             this.registry.register(new SparkRendererHolder(sparkRenderer));
             this.scene.add(sparkRenderer);
@@ -18128,5 +20790,5 @@ class VideoFileStream extends VideoStream {
     }
 }
 
-export { AI, AIOptions, AVERAGE_IPD_METERS, ActiveControllers, Agent, AnimatableNumber, AudioListener, AudioPlayer, BACK, BackgroundMusic, CategoryVolumes, Col, Core, CoreSound, DEFAULT_DEVICE_CAMERA_HEIGHT, DEFAULT_DEVICE_CAMERA_WIDTH, DEFAULT_RGB_TO_DEPTH_PARAMS, DEVICE_CAMERA_PARAMETERS, DOWN, Depth, DepthMesh, DepthMeshOptions, DepthOptions, DepthTextures, DetectedObject, DetectedPlane, DeviceCameraOptions, DragManager, DragMode, ExitButton, FORWARD, FreestandingSlider, GEMINI_DEFAULT_FLASH_MODEL, GEMINI_DEFAULT_LIVE_MODEL, GazeController, Gemini, GeminiOptions, GenerateSkyboxTool, GestureRecognition, GestureRecognitionOptions, GetWeatherTool, Grid, HAND_BONE_IDX_CONNECTION_MAP, HAND_JOINT_COUNT, HAND_JOINT_IDX_CONNECTION_MAP, HAND_JOINT_NAMES, Handedness, Hands, HandsOptions, HorizontalPager, IconButton, IconView, ImageView, Input, InputOptions, Keycodes, LEFT, LEFT_VIEW_ONLY_LAYER, LabelView, Lighting, LightingOptions, LoadingSpinnerManager, MaterialSymbolsView, MeshScript, ModelLoader, ModelViewer, MouseController, NUM_HANDS, OCCLUDABLE_ITEMS_LAYER, ObjectDetector, ObjectsOptions, OcclusionPass, OcclusionUtils, OpenAI, OpenAIOptions, Options, PageIndicator, Pager, PagerState, Panel, PanelMesh, Physics, PhysicsOptions, PinchOnButtonAction, PlaneDetector, PlanesOptions, RIGHT, RIGHT_VIEW_ONLY_LAYER, Raycaster, Registry, Reticle, ReticleOptions, Reticles, RotationRaycastMesh, Row, SIMULATOR_HAND_POSE_NAMES, SIMULATOR_HAND_POSE_TO_JOINTS_LEFT, SIMULATOR_HAND_POSE_TO_JOINTS_RIGHT, SOUND_PRESETS, ScreenshotSynthesizer, Script, ScriptMixin, ScriptsManager, ScrollingTroikaTextView, SetSimulatorModeEvent, ShowHandsAction, Simulator, SimulatorCamera, SimulatorControlMode, SimulatorControllerState, SimulatorControls, SimulatorDepth, SimulatorDepthMaterial, SimulatorHandPose, SimulatorHandPoseChangeRequestEvent, SimulatorHands, SimulatorInterface, SimulatorMediaDeviceInfo, SimulatorMode, SimulatorOptions, SimulatorRenderMode, SimulatorScene, SimulatorUser, SimulatorUserAction, SketchPanel, SkyboxAgent, SoundOptions, SoundSynthesizer, SparkRendererHolder, SpatialAudio, SpatialPanel, SpeechRecognizer, SpeechRecognizerOptions, SpeechSynthesizer, SpeechSynthesizerOptions, SplatAnchor, StreamState, TextButton, TextScrollerState, TextView, Tool, UI, UI_OVERLAY_LAYER, UP, UX, User, VIEW_DEPTH_GAP, VerticalPager, VideoFileStream, VideoStream, VideoView, View, VolumeCategory, WaitFrame, WalkTowardsPanelAction, World, WorldOptions, XRButton, XRDeviceCamera, XREffects, XRPass, XRTransitionOptions, XR_BLOCKS_ASSETS_PATH, ZERO_VECTOR3, add, ai, callInitWithDependencyInjection, camera, clamp, clampRotationToAngle, core, cropImage, depth, extractYaw, getCameraParametersSnapshot, getColorHex, getDeltaTime, getDeviceCameraClipFromView, getDeviceCameraWorldFromClip, getDeviceCameraWorldFromView, getElapsedTime, getUrlParamBool, getUrlParamFloat, getUrlParamInt, getUrlParameter, getVec4ByColorString, getXrCameraLeft, getXrCameraRight, init, initScript, input, intrinsicsToProjectionMatrix, lerp, loadStereoImageAsTextures, loadingSpinnerManager, lookAtRotation, objectIsDescendantOf, parseBase64DataURL, placeObjectAtIntersectionFacingTarget, print, scene, showOnlyInLeftEye, showOnlyInRightEye, showReticleOnDepthMesh, sound, timer, transformRgbUvToWorld, traverseUtil, uninitScript, urlParams, user, world, xrDepthMeshOptions, xrDepthMeshPhysicsOptions, xrDepthMeshVisualizationOptions, xrDeviceCameraEnvironmentContinuousOptions, xrDeviceCameraEnvironmentOptions, xrDeviceCameraUserContinuousOptions, xrDeviceCameraUserOptions };
+export { AI, AIOptions, AVERAGE_IPD_METERS, ActiveControllers, Agent, AnimatableNumber, AudioListener, AudioPlayer, BACK, BackgroundMusic, CategoryVolumes, Col, Core, CoreSound, DEFAULT_DEVICE_CAMERA_HEIGHT, DEFAULT_DEVICE_CAMERA_WIDTH, DEFAULT_RGB_TO_DEPTH_PARAMS, DEVICE_CAMERA_PARAMETERS, DOWN, Depth, DepthMesh, DepthMeshOptions, DepthOptions, DepthTextures, DetectedObject, DetectedPlane, DeviceCameraOptions, DragManager, DragMode, ExitButton, FINGER_ORDER, FORWARD, FreestandingSlider, GEMINI_DEFAULT_FLASH_MODEL, GEMINI_DEFAULT_IMAGE_MODEL, GEMINI_DEFAULT_LIVE_MODEL, GamepadBindings, GamepadController, GazeController, Gemini, GeminiOptions, GenerateSkyboxTool, GestureRecognition, GestureRecognitionOptions, GetWeatherTool, Grid, HAND_BONE_IDX_CONNECTION_MAP, HAND_INDEX_TO_LABEL, HAND_JOINT_COUNT, HAND_JOINT_IDX_CONNECTION_MAP, HAND_JOINT_NAMES, Handedness, Hands, HandsOptions, HeuristicGestureRecognizer, HorizontalPager, IconButton, IconView, ImageView, Input, InputOptions, Keycodes, LEFT, LEFT_VIEW_ONLY_LAYER, LabelView, Lighting, LightingOptions, LoadingSpinnerManager, MaterialSymbolsView, MediaPipeHandContext, MediaPipeHandPoseEstimator, MeshScript, ModelLoader, ModelViewer, MouseController, NUM_HANDS, OCCLUDABLE_ITEMS_LAYER, ObjectDetector, ObjectsOptions, OcclusionPass, OcclusionUtils, OpenAI, OpenAIOptions, Options, PageIndicator, Pager, PagerState, Panel, PanelMesh, Physics, PhysicsOptions, PinchOnButtonAction, PlaneDetector, PlanesOptions, RIGHT, RIGHT_VIEW_ONLY_LAYER, Raycaster, Registry, Reticle, ReticleOptions, Reticles, RotationRaycastMesh, Row, SIMULATOR_HAND_COMMON_BIOMECHANICAL_CONSTRAINTS_DEGREES, SIMULATOR_HAND_POSE_NAMES, SIMULATOR_HAND_POSE_ROTATIONS, SOUND_PRESETS, ScreenshotSynthesizer, Script, ScriptMixin, ScriptsManager, ScriptsManagerEventType, ScrollingTroikaTextView, SetSimulatorEnvironmentEvent, SetSimulatorModeEvent, ShowHandsAction, Simulator, SimulatorCamera, SimulatorControlMode, SimulatorControllerState, SimulatorControls, SimulatorDepth, SimulatorDepthMaterial, SimulatorHandPose, SimulatorHandPoseChangeRequestEvent, SimulatorHands, SimulatorInterface, SimulatorMediaDeviceInfo, SimulatorMode, SimulatorOptions, SimulatorRenderMode, SimulatorScene, SimulatorUser, SimulatorUserAction, SketchPanel, SkyboxAgent, SoundOptions, SoundSynthesizer, SparkRendererHolder, SpatialAudio, SpatialPanel, SpeechRecognizer, SpeechRecognizerOptions, SpeechSynthesizer, SpeechSynthesizerOptions, SplatAnchor, StreamState, StrokeRecognizer, StylizedFace, TensorFlowHandPoseEstimator, TextButton, TextScrollerState, TextView, Tool, UI, UIKitOptions, UI_OVERLAY_LAYER, UP, UX, User, VIEW_DEPTH_GAP, VerticalPager, VideoFileStream, VideoStream, VideoView, View, VolumeCategory, WaitFrame, WalkTowardsPanelAction, WebXRHandContext, WebXRHandPoseEstimator, World, WorldOptions, XRButton, XRDeviceCamera, XREffects, XRPass, XRTransitionOptions, XR_BLOCKS_ASSETS_PATH, ZERO_VECTOR3, ZERO_VISEME, add, ai, applySimulatorHandPoseRotationConstraints, average, callInitWithDependencyInjection, camera, clamp$1 as clamp, clamp01, clampRotationToAngle, core, cropImage, depth, estimateHandScale, extractYaw, getAdjacentFingerSpreads, getBoneVectors, getCameraParametersSnapshot, getColorHex, getDeltaTime, getDeviceCameraClipFromView, getDeviceCameraWorldFromClip, getDeviceCameraWorldFromView, getElapsedTime, getFingerBendAngles, getFingerCurl, getFingerDirection, getFingerJoint, getFingerPalmAlignment, getFingerSpread, getFingerStraightness, getFingertipDistance, getFingertipPalmDistance, getPalmNormal, getPalmPose, getPalmRight, getPalmUp, getPalmWidth, getRelativeBoneAngles, getThumbBendAngles, getThumbCurl, getThumbDirection, getThumbOpposition, getThumbStraightness, getThumbVerticalDirection, getUrlParamBool, getUrlParamFloat, getUrlParamInt, getUrlParameter, getVec4ByColorString, getXrCameraLeft, getXrCameraRight, init, initScript, input, intrinsicsToProjectionMatrix, lerp, loadStereoImageAsTextures, loadingSpinnerManager, lookAtRotation, objectIsDescendantOf, parseBase64DataURL, parseSimulatorHandPoseRotations, placeObjectAtIntersectionFacingTarget, print, resolveSimulatorHandPoseRotations, scene, showOnlyInLeftEye, showOnlyInRightEye, showReticleOnDepthMesh, sound, timer, transformRgbUvToWorld, traverseUtil, uninitScript, urlParams, user, world, xrDepthMeshOptions, xrDepthMeshPhysicsOptions, xrDepthMeshVisualizationOptions, xrDeviceCameraEnvironmentContinuousOptions, xrDeviceCameraEnvironmentOptions, xrDeviceCameraUserContinuousOptions, xrDeviceCameraUserOptions };
 //# sourceMappingURL=xrblocks.js.map
