@@ -71,6 +71,7 @@ export * from './simulator/SimulatorHands';
 export * from './simulator/SimulatorInterface';
 export * from './simulator/SimulatorMediaDeviceInfo';
 export * from './simulator/SimulatorOptions';
+export * from './simulator/SimulatorPointerLockController';
 export * from './simulator/interfaces/ISimulatorSettingsPanelElement';
 export * from './simulator/SimulatorScene';
 export * from './simulator/SimulatorUser';

@@ -14,7 +14,7 @@ Single-user mic into any `Object3D` head:
 
 ```ts
 import * as xb from 'xrblocks';
-import {LipsyncMouth} from 'xrblocks/addons/lipsync';
+import {LipsyncMouth} from 'xrblocks/addons/lipsync/index.js';
 
 const face = new xb.StylizedFace({showEyes: false});
 headPivot.add(face);
@@ -28,22 +28,39 @@ That's it. Once `driver` is in the scene graph, the xrblocks scripts manager cal
 
 ## Netblocks integration
 
-Netblocks's `RemoteUserAvatar` already attaches a `face` (a `StylizedFace`) to every remote peer out of the box, so you don't have to create one yourself. Just point `LipsyncMouth` at it:
+Netblocks's `RemoteUserAvatar` already attaches a `face` (a `StylizedFace`) to every remote peer out of the box, so you don't have to create one yourself. Just point `LipsyncMouth` at it. Track drivers per peer so mic mute / unmute / leave doesn't leak.
 
 ```ts
 import * as THREE from 'three';
-import {LipsyncMouth} from 'xrblocks/addons/lipsync';
+import {LipsyncMouth} from 'xrblocks/addons/lipsync/index.js';
+
+private drivers = new Map<string, LipsyncMouth>();
+private sharedCtx = THREE.AudioContext.getContext();
+
+private detachDriver(peerId: string) {
+  const prior = this.drivers.get(peerId);
+  if (prior) {
+    prior.dispose();
+    prior.removeFromParent();
+    this.drivers.delete(peerId);
+  }
+}
 
 protected override onSession(session) {
-  const sharedCtx = THREE.AudioContext.getContext();
   session.voice.onTrack((peerId, stream) => {
     const user = session.users.get(peerId);
     if (!user) return;
+    this.detachDriver(peerId);
     const driver = new LipsyncMouth(stream, {
       target: user.avatar.face,
-      audioContext: sharedCtx,
+      audioContext: this.sharedCtx,
     });
     user.avatar.add(driver);
+    this.drivers.set(peerId, driver);
+  });
+  session.voice.onTrackRemoved((peerId) => this.detachDriver(peerId));
+  session.addEventListener('user-leave', (e) => {
+    this.detachDriver(e.detail.user.peerId);
   });
 }
 ```

@@ -31,8 +31,9 @@ The `xb-` prefix matches the `xb` import alias.
 | [`xb-physics`](xb-physics/SKILL.md)         | Add Rapier rigid-body physics                                     |
 | [`xb-simulator`](xb-simulator/SKILL.md)     | Develop/test in the desktop simulator                             |
 | [`xb-netblocks`](xb-netblocks/SKILL.md)     | Add multiplayer presence, shared objects, voice                   |
+| [`xb-lipsync`](xb-lipsync/SKILL.md)         | Drive audio-driven avatar mouths from any `MediaStream`           |
 | [`xb-sound`](xb-sound/SKILL.md)             | Play spatial audio, record, recognize/synthesize speech           |
 
 Deep references some skills link to live next to the code:
 [`../src/SKILL.md`](../src/SKILL.md), [`../src/addons/uiblocks/SKILL.md`](../src/addons/uiblocks/SKILL.md),
-[`../src/addons/netblocks/SKILL.md`](../src/addons/netblocks/SKILL.md).
+[`../src/addons/netblocks/SKILL.md`](../src/addons/netblocks/SKILL.md), [`../src/addons/lipsync/SKILL.md`](../src/addons/lipsync/SKILL.md).

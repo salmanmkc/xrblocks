@@ -31,7 +31,7 @@ import * as xb from 'xrblocks';
 import {
   enableNet,
   BroadcastChannelTransport,
-} from 'xrblocks/addons/netblocks/src';
+} from 'xrblocks/addons/netblocks/src/index.js';
 
 class MyApp extends xb.Script {
   async init() {
@@ -52,7 +52,10 @@ xb.init();
 ## Share an object
 
 ```ts
-import {NetObject, WebRTCTransport} from 'xrblocks/addons/netblocks/src';
+import {
+  NetObject,
+  WebRTCTransport,
+} from 'xrblocks/addons/netblocks/src/index.js';
 
 const shared = new NetObject({id: 'cube', object: this.cube});
 const net = enableNet();
