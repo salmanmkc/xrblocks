@@ -193,12 +193,14 @@ describe('ObjectDetector Multi-Client API', () => {
     ).toBeNull();
   });
 
-  it('disposes temporary depth mesh snapshots after detection', async () => {
+  it('reuses the depth mesh snapshot across detections and frees it on dispose', async () => {
     const geometryDispose = vi.fn();
     const materialDispose = vi.fn();
+    const snapshots: THREE.Mesh[] = [];
 
     mockBackend.run.mockImplementation(
       async (depthMeshSnapshot: THREE.Mesh) => {
+        snapshots.push(depthMeshSnapshot);
         vi.spyOn(depthMeshSnapshot.geometry, 'dispose').mockImplementation(
           geometryDispose
         );
@@ -209,6 +211,15 @@ describe('ObjectDetector Multi-Client API', () => {
     );
 
     await detector.runDetection();
+    await detector.runDetection();
+
+    // The depth geometry never changed, so cloning it a second time would be
+    // wasted work. Freeing it between detections would defeat the cache.
+    expect(snapshots[0]).toBe(snapshots[1]);
+    expect(geometryDispose).not.toHaveBeenCalled();
+
+    detector.dispose();
+    await Promise.resolve();
 
     expect(geometryDispose).toHaveBeenCalledTimes(1);
     expect(materialDispose).toHaveBeenCalledTimes(1);

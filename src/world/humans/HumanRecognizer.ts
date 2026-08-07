@@ -3,7 +3,7 @@ import {getCameraParametersSnapshot} from '../../camera/CameraUtils';
 import {XRDeviceCamera} from '../../camera/XRDeviceCamera';
 import {Script} from '../../core/Script';
 import {Depth} from '../../depth/Depth';
-import {disposeMaterial} from '../../utils/ThreeDisposal';
+import {DepthMeshSnapshotCache} from '../shared/DepthMeshSnapshotCache';
 import {WorldOptions} from '../WorldOptions';
 import {DetectedBodyPose} from './DetectedBodyPose';
 import {BaseHumanBackend, HumanBackendContext} from './HumanDetectorBackend';
@@ -190,16 +190,12 @@ export class HumanRecognizer extends Script {
     if (this.disposed) {
       return [];
     }
-    const depthMeshSnapshot = this.getDepthMeshSnapshot();
-    try {
-      const bodyPoses = await backend.run(
-        depthMeshSnapshot,
-        cameraParametersSnapshot
-      );
-      return this.disposed ? [] : bodyPoses;
-    } finally {
-      this.disposeDepthMeshSnapshot(depthMeshSnapshot);
-    }
+    const depthMeshSnapshot = this.depthMeshSnapshots.get(this.depth);
+    const bodyPoses = await backend.run(
+      depthMeshSnapshot,
+      cameraParametersSnapshot
+    );
+    return this.disposed ? [] : bodyPoses;
   }
 
   private getBackendContext(): HumanBackendContext {
@@ -231,35 +227,23 @@ export class HumanRecognizer extends Script {
     return backendPromise;
   }
 
-  private getDepthMeshSnapshot() {
-    const depthMesh = this.depth.depthMesh!;
-    const geometry = this.depth.options.depthMesh.updateFullResolutionGeometry
-      ? depthMesh.geometry
-      : depthMesh.downsampledGeometry || depthMesh.geometry;
-    const clonedGeometry = geometry.clone();
-    clonedGeometry.computeBoundingSphere();
-    clonedGeometry.computeBoundingBox();
-    const depthMeshSnapshot = new THREE.Mesh(
-      clonedGeometry,
-      new THREE.MeshBasicMaterial()
-    );
-    depthMesh.getWorldPosition(depthMeshSnapshot.position);
-    depthMesh.getWorldQuaternion(depthMeshSnapshot.quaternion);
-    depthMesh.getWorldScale(depthMeshSnapshot.scale);
-    depthMeshSnapshot.updateMatrixWorld(true);
-    return depthMeshSnapshot;
-  }
-
-  private disposeDepthMeshSnapshot(depthMeshSnapshot: THREE.Mesh) {
-    depthMeshSnapshot.geometry.dispose();
-    disposeMaterial(depthMeshSnapshot.material);
-  }
+  private readonly depthMeshSnapshots = new DepthMeshSnapshotCache();
 
   override dispose() {
     this.disposed = true;
     this.activeClients.clear();
     this.clear();
     this.poses = [];
+    // The cached clone is handed to the backend, which may still be reading it
+    // when a detection is in flight, so only free it once that settles.
+    const pendingDetection = this.currentDetectionPromise;
+    if (pendingDetection) {
+      void pendingDetection
+        .finally(() => this.depthMeshSnapshots.dispose())
+        .catch(() => {});
+    } else {
+      this.depthMeshSnapshots.dispose();
+    }
     for (const backendPromise of this.detectorBackends.values()) {
       void backendPromise
         .then((backend) => backend.dispose?.())

@@ -30,7 +30,9 @@ describe('HumanRecognizer Multi-Client API', () => {
     options.humans.enable();
     const deviceCamera = {} as unknown as XRDeviceCamera;
     const depth = {
-      depthMesh: new THREE.Mesh(),
+      // A real geometry so the snapshot cache can read the position
+      // attribute's version, the same way the depth mesh provides it.
+      depthMesh: new THREE.Mesh(new THREE.BoxGeometry()),
       options: {
         depthMesh: {
           updateFullResolutionGeometry: false,
@@ -175,12 +177,14 @@ describe('HumanRecognizer Multi-Client API', () => {
     ).toBeNull();
   });
 
-  it('disposes temporary depth mesh snapshots after detection', async () => {
+  it('reuses the depth mesh snapshot across detections and frees it on dispose', async () => {
     const geometryDispose = vi.fn();
     const materialDispose = vi.fn();
+    const snapshots: THREE.Mesh[] = [];
 
     mockBackend.run.mockImplementation(
       async (depthMeshSnapshot: THREE.Mesh) => {
+        snapshots.push(depthMeshSnapshot);
         vi.spyOn(depthMeshSnapshot.geometry, 'dispose').mockImplementation(
           geometryDispose
         );
@@ -191,8 +195,38 @@ describe('HumanRecognizer Multi-Client API', () => {
     );
 
     await recognizer.runDetection();
+    await recognizer.runDetection();
+
+    // The depth geometry never changed, so cloning it a second time would be
+    // wasted work. Freeing it between detections would defeat the cache.
+    expect(snapshots[0]).toBe(snapshots[1]);
+    expect(geometryDispose).not.toHaveBeenCalled();
+
+    recognizer.dispose();
+    await Promise.resolve();
 
     expect(geometryDispose).toHaveBeenCalledTimes(1);
     expect(materialDispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('rebuilds the snapshot when the depth geometry changes', async () => {
+    const snapshots: THREE.Mesh[] = [];
+    mockBackend.run.mockImplementation(
+      async (depthMeshSnapshot: THREE.Mesh) => {
+        snapshots.push(depthMeshSnapshot);
+        return [];
+      }
+    );
+
+    await recognizer.runDetection();
+
+    // three.js bumps the attribute version on needsUpdate, which is what the
+    // depth mesh does whenever it refreshes.
+    const depth = (recognizer as unknown as {depth: Depth}).depth;
+    depth.depthMesh!.geometry.attributes.position.needsUpdate = true;
+
+    await recognizer.runDetection();
+
+    expect(snapshots[0]).not.toBe(snapshots[1]);
   });
 });

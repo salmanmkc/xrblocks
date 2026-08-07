@@ -7,10 +7,10 @@ import {XRDeviceCamera} from '../../camera/XRDeviceCamera';
 import {Script} from '../../core/Script';
 import {Depth} from '../../depth/Depth';
 import {
-  disposeMaterial,
   disposeObjectChildren,
   disposeObjectTree,
 } from '../../utils/ThreeDisposal';
+import {DepthMeshSnapshotCache} from '../shared/DepthMeshSnapshotCache';
 import {WorldOptions} from '../WorldOptions';
 import {DetectedObject} from './DetectedObject';
 import {
@@ -302,23 +302,19 @@ export class ObjectDetector extends Script {
     if (this.disposed) {
       return [];
     }
-    const depthMeshSnapshot = this.getDepthMeshSnapshot();
-    try {
-      const detectedObjects = await detectorBackend.run(
-        depthMeshSnapshot,
-        cameraParametersSnapshot
-      );
-      if (this.disposed) {
-        return [];
-      }
-      for (const obj of detectedObjects) {
-        this._detectedObjects.set(obj.uuid, obj);
-        this.add(obj);
-      }
-      return detectedObjects;
-    } finally {
-      this.disposeDepthMeshSnapshot(depthMeshSnapshot);
+    const depthMeshSnapshot = this.depthMeshSnapshots.get(this.depth);
+    const detectedObjects = await detectorBackend.run(
+      depthMeshSnapshot,
+      cameraParametersSnapshot
+    );
+    if (this.disposed) {
+      return [];
     }
+    for (const obj of detectedObjects) {
+      this._detectedObjects.set(obj.uuid, obj);
+      this.add(obj);
+    }
+    return detectedObjects;
   }
 
   private getDetectorContext(): DetectorBackendContext {
@@ -364,24 +360,7 @@ export class ObjectDetector extends Script {
     return detectorBackendPromise;
   }
 
-  private getDepthMeshSnapshot() {
-    const depthMesh = this.depth.depthMesh!;
-    const geometry = this.depth.options.depthMesh.updateFullResolutionGeometry
-      ? depthMesh.geometry
-      : depthMesh.downsampledGeometry || depthMesh.geometry;
-    const clonedGeometry = geometry.clone();
-    clonedGeometry.computeBoundingSphere();
-    clonedGeometry.computeBoundingBox();
-    const depthMeshSnapshot = new THREE.Mesh(
-      clonedGeometry,
-      new THREE.MeshBasicMaterial()
-    );
-    depthMesh.getWorldPosition(depthMeshSnapshot.position);
-    depthMesh.getWorldQuaternion(depthMeshSnapshot.quaternion);
-    depthMesh.getWorldScale(depthMeshSnapshot.scale);
-    depthMeshSnapshot.updateMatrixWorld(true);
-    return depthMeshSnapshot;
-  }
+  private readonly depthMeshSnapshots = new DepthMeshSnapshotCache();
 
   /**
    * Retrieves a list of currently detected objects.
@@ -421,9 +400,8 @@ export class ObjectDetector extends Script {
     }
   }
 
-  private disposeDepthMeshSnapshot(depthMeshSnapshot: THREE.Mesh) {
-    depthMeshSnapshot.geometry.dispose();
-    disposeMaterial(depthMeshSnapshot.material);
+  private disposeDepthMeshSnapshot() {
+    this.depthMeshSnapshots.dispose();
   }
 
   /**
@@ -441,6 +419,17 @@ export class ObjectDetector extends Script {
     this.activeClients.clear();
     disposeObjectChildren(this);
     this.clear(); // Unlinks children so needs to come last
+
+    // The cached clone may still be in use by an in-flight detection, so only
+    // free it once that settles.
+    const pendingDetection = this.currentDetectionPromise;
+    if (pendingDetection) {
+      void pendingDetection
+        .finally(() => this.disposeDepthMeshSnapshot())
+        .catch(() => {});
+    } else {
+      this.disposeDepthMeshSnapshot();
+    }
 
     for (const backendPromise of this._detectorBackends.values()) {
       void backendPromise
