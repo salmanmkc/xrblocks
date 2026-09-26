@@ -31,6 +31,18 @@ describe('Gemma vision questions', () => {
     }
   });
 
+  it('keeps descriptions concise and OCR/translation free of prefaces', () => {
+    expect(PRESETS[0].prompt).toBe(
+      'What am I looking at? Describe the image in two short sentences.'
+    );
+    expect(PRESETS[1].prompt).toBe(
+      'Read and transcribe the text visible in the image. Return only the text, without a preface or explanation.'
+    );
+    expect(PRESETS[2].prompt).toBe(
+      'Translate the text visible in the image to English. Return only the translated text, without a preface or explanation.'
+    );
+  });
+
   it('trims a valid question and preserves Unicode', () => {
     expect(validateQuestion(' \n Read: 東京駅 — café 🚉 \t')).toBe(
       'Read: 東京駅 — café 🚉'

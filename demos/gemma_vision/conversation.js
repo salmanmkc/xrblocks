@@ -5,15 +5,17 @@ export const MAX_CONTEXT_TOKENS = 4096;
 export const PRESETS = [
   {
     label: 'What am I looking at?',
-    prompt: 'What am I looking at? Describe the image.',
+    prompt: 'What am I looking at? Describe the image in two short sentences.',
   },
   {
     label: 'Read the text',
-    prompt: 'Read and transcribe the text visible in the image.',
+    prompt:
+      'Read and transcribe the text visible in the image. Return only the text, without a preface or explanation.',
   },
   {
     label: 'Translate the text to English',
-    prompt: 'Translate the text visible in the image to English.',
+    prompt:
+      'Translate the text visible in the image to English. Return only the translated text, without a preface or explanation.',
   },
 ];
 
