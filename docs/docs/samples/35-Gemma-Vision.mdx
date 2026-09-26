@@ -33,11 +33,11 @@ export function OpenDemo() {
 
 Capture the camera view, then ask Gemma 4 to describe it, read visible text, or translate that text to English. Typed follow-ups refer to the same frozen image. Image understanding and text generation run entirely on-device in a WebGPU worker, without an API key or cloud inference.
 
-Use desktop Chrome with WebGPU and enough memory for a large model. Press **Download Gemma 4 (~3.4 GB)** on the 2D page before entering XR or choosing **Continue in simulator**. On desktop, the simulator starts behind this landing panel. The model is cached only after an explicit download; the page reports incomplete storage rather than silently downloading it again. Opening the demo in its own tab avoids additional iframe storage or permission restrictions.
+Use desktop Chrome with WebGPU. Press **Download Gemma 4 (~3.4 GB)** on the 2D page, then choose **Continue in simulator** or enter XR. The model is saved in the browser cache for later visits.
 
-The camera source is `deviceCamera.captureSnapshot({outputFormat: 'imageData', width, height})`, including the simulator's virtual camera and the SDK's phone WebXR one-shot capture path. The worker uses Transformers.js 4.3.0, a pinned Gemma 4 E2B ONNX model, and a measured 140-soft-token image budget. A single retained transcript text node receives batched updates rather than rebuilding the card for each streamed chunk.
+Camera frames come from `deviceCamera.captureSnapshot({outputFormat: 'imageData', width, height})`. The worker uses Transformers.js 4.3.0, a pinned Gemma 4 E2B ONNX model, and a measured 140-soft-token image budget. A single retained transcript text node receives batched updates rather than rebuilding the card for each streamed chunk.
 
-Camera images, questions, and answers are not uploaded. Initial application, runtime, and model downloads use the network; subsequent questions work offline while the model remains loaded. Fresh offline page reload is not guaranteed. Phone memory suitability is unverified, and Quest camera input is not a supported target. OCR and translation can be incorrect, especially for small text or long documents.
+Camera images, questions, and answers stay on the device. Initial application, runtime, and model downloads use the network; subsequent questions work offline while the model remains loaded. See the [README device notes](https://github.com/google/xrblocks/tree/main/demos/gemma_vision#device-notes) for tested hardware and startup measurements.
 
 ## Credits
 

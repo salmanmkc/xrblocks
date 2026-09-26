@@ -208,8 +208,10 @@ describe('Gemma vision retained UI and startup', () => {
     expect(store.inspectCache).not.toHaveBeenCalled();
     expect(scene.privacy.text).toContain('stay on this device');
     expect(scene.privacy.text).toContain('while the model remains loaded');
-    expect(scene.card.children[1].text).toContain('GPU shader compilation');
-    expect(scene.card.children[1].text).toMatch(/first answer/i);
+    expect(scene.card.children[1].text).toContain('~3.4 GB model download');
+    expect(scene.card.children[1].text).toContain('Desktop Chrome/WebGPU');
+    expect(scene.card.children[1].text).not.toMatch(/shader|compil|pause/i);
+    expect(scene.privacy.text).not.toMatch(/wrong|safety-critical/i);
   });
 
   it('initializes capabilities, cache and live camera without downloading', async () => {

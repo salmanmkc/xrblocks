@@ -56,17 +56,15 @@ describe('Gemma vision browser entry', () => {
     expect(worker).not.toContain('transformers.web.min.js');
   });
 
-  it('discloses explicit downloads, disk and RAM needs, and loaded-session offline limits', () => {
+  it('keeps landing copy focused on the task, download, desktop requirements and privacy', () => {
     const panel = page.getElementById('model-preload')!;
     const copy = panel.textContent!.replace(/\s+/g, ' ');
     expect(page.title).toContain('What am I looking at?');
     expect(copy).toContain('~3.4 GB');
-    expect(copy).toMatch(/RAM/);
     expect(copy).toMatch(/desktop Chrome/);
     expect(copy).toMatch(/WebGPU/);
-    expect(copy).toContain(
-      'Loading and the first answer may pause while GPU shaders compile'
-    );
+    expect(copy).toMatch(/describe it, read its text, or translate/i);
+    expect(copy).not.toMatch(/shader|compil|pause|safety-critical|unverified/i);
     expect(copy).toMatch(
       /Initial app\/runtime\/model downloads use the network/
     );

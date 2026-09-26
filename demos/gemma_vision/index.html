@@ -93,24 +93,17 @@
     <section id="model-preload" aria-labelledby="preload-title">
       <h2 id="preload-title">What am I looking at?</h2>
       <p>
-        Load Gemma 4 here before continuing to the spatial controls. Capture an
-        image to describe it, read its text, or translate the text to English.
-        The landing panel and spatial controls use the same model.
+        Capture a camera image and ask Gemma 4 to describe it, read its text, or
+        translate it to English.
       </p>
       <p>
-        Start with desktop Chrome and WebGPU. The model requires ~3.4 GB of
-        browser disk storage; runtime downloads and working RAM/GPU memory are
-        additional. Phone compatibility is not yet verified.
-      </p>
-      <p>
-        Loading and the first answer may pause while GPU shaders compile,
-        including after a cached reload. Later answers can be faster.
+        Use desktop Chrome with WebGPU. Download the ~3.4 GB model once, then
+        load it from the browser cache.
       </p>
       <p>
         Camera images, questions, and answers stay on this device. Initial
         app/runtime/model downloads use the network. Offline questions work
-        while the model remains loaded. A fresh page reload may need the
-        network.
+        while the model remains loaded.
       </p>
       <p id="startup" role="status" aria-live="polite" aria-atomic="true">
         Preparing scene controls. The model downloads only when you choose
@@ -126,10 +119,6 @@
       <button id="preload-continue" type="button" hidden>
         Continue in simulator
       </button>
-      <p>
-        Answers, transcription, and translation may be incorrect. Do not use
-        this demo for safety-critical decisions.
-      </p>
     </section>
     <script type="module" src="./main.js"></script>
   </body>

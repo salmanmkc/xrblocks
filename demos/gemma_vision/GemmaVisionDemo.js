@@ -77,8 +77,7 @@ export class GemmaVisionDemo extends xb.Script {
       text:
         'Camera images, questions, and answers stay on this device. ' +
         'Initial app/runtime/model downloads use the network. ' +
-        'Offline questions work while the model remains loaded. ' +
-        'OCR and translation can be wrong; not for safety-critical decisions.',
+        'Offline questions work while the model remains loaded.',
       style: NOTE_STYLE,
     });
     this.historyText = new xb.UIText({
@@ -134,9 +133,7 @@ export class GemmaVisionDemo extends xb.Script {
           style: {fontSize: 28, fontWeight: 'bold', color: '#f8fafc'},
         }),
         new xb.UIText({
-          text:
-            '~3.4 GB model download · Extra RAM/GPU memory required · Desktop Chrome/WebGPU. ' +
-            'Loading and the first answer may pause during GPU shader compilation.',
+          text: '~3.4 GB model download · Desktop Chrome/WebGPU',
           style: NOTE_STYLE,
         }),
         this.loadButton,

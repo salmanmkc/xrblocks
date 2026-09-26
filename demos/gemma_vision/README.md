@@ -12,8 +12,6 @@ In the spatial card, press **Capture**, then choose a preset or type a question 
 
 **Stop** interrupts generation cooperatively. A GPU operation already in progress may need to finish first. An unresponsive worker is terminated after five seconds, requiring an explicit model reload and another capture.
 
-Desktop simulator captures come from its virtual environment. The existing SDK snapshot API also supports ordinary device video and phone WebXR raw camera access. This demo has not been qualified on phones; its memory needs may be too high. Quest camera input is not a supported target.
-
 ## Model and runtime
 
 The model is [`onnx-community/gemma-4-E2B-it-ONNX`](https://huggingface.co/onnx-community/gemma-4-E2B-it-ONNX/tree/9f4bef82ea6e296bc69f8a2f5939f73af81b07a6), pinned to revision `9f4bef82ea6e296bc69f8a2f5939f73af81b07a6`, with `q4f16` weights. Transformers.js is pinned to `4.3.0`; the worker imports its standalone ESM bundle directly because workers do not inherit page importmaps.
@@ -35,7 +33,7 @@ Frames are captured through `xb.core.deviceCamera.captureSnapshot({outputFormat:
 
 Generation is greedy, with thinking disabled, a 128-token output cap, and a 4,096-token input-plus-output limit. Questions are limited to 2,000 characters. A capped answer is marked as truncated; long documents and tiny or blurry text may not be read completely or correctly. These are model-generated descriptions and translations, not safety-critical guidance.
 
-## Performance and privacy
+## Performance
 
 Inference runs off the main thread, but rendering and inference still share the GPU. The transcript is one retained text node, with streamed display updates limited to 10 Hz. Markdown is projected to inert display text using pinned `marked`, not rendered as HTML or active links.
 
@@ -49,9 +47,17 @@ With the same 512x512 sign capture and question, three warm runs per budget prod
 | **140 (default)** | **0.82-0.85 s**    | **28.0-28.6 tokens/s** | **18.9-19.6 ms**       |
 | 70                | 0.48-0.49 s        | 28.5-29.6 tokens/s     | 18.6-20.0 ms           |
 
-All three budgets read that sign correctly. The 140-token default preserves more image detail than 70 while avoiding the larger budget's measured stalls. These few scenes do not establish accuracy on arbitrary photographs or documents. A cache-only worker reload took 8.5 seconds without model network requests; its first 140-budget answer then took 8.1 seconds to first text, with a 319 ms maximum frame interval during cold compilation. Warm results do not eliminate startup pauses.
+All three budgets read that sign correctly. The 140-token default preserves more image detail than 70 while avoiding the larger budget's measured stalls. These few scenes do not establish accuracy on arbitrary photographs or documents.
 
 With the final spatial card attached, three warm runs of the **Read the text** preset returned the exact sign in 0.79-1.36 seconds to first text, at 21.7-25.8 tokens/s. Frame p95 was 18.8-19.2 ms and frame maximum 19.8-24.5 ms. The transcript node and card structure stayed identical throughout generation, and intermediate text writes were at least 100 ms apart. The final card also passed translation and an offline typed follow-up submitted through its real text input. Results depend on the image, prompt, compilation state, and other GPU activity.
+
+## Device notes
+
+Desktop simulator captures come from its virtual environment. The existing SDK snapshot API also supports ordinary device video and phone WebXR raw camera access. This demo has not been qualified on phones; its memory needs may be too high. Quest camera input is not a supported target.
+
+The first answer can take longer while GPU shaders compile, including after a cached reload. On the test Mac, a cache-only load took 8.5 seconds without model network requests; the first answer then took 8.1 seconds to first text, with a 319 ms maximum frame interval.
+
+## Privacy and storage
 
 Images, questions, and answers remain on this device and are not persisted by the demo. The application, runtime, and initial model download require network requests to their hosting services. Once the model is loaded, further questions can run offline. **A fresh offline page reload is not guaranteed** because the application and CDN module graph are not installed as an offline app. Only model/runtime assets are cached, not conversations or camera captures.
 
