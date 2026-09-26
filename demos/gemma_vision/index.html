@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <title>What am I looking at? | XR Blocks</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="../../samples/main.css" />
+    <style>
+      #model-preload {
+        box-sizing: border-box;
+        position: fixed;
+        inset: 24px auto auto 24px;
+        width: min(520px, calc(100% - 48px));
+        max-height: calc(100% - 48px);
+        overflow-y: auto;
+        padding: 20px;
+        border: 1px solid #576475;
+        border-radius: 12px;
+        color: #fff;
+        background: #202124;
+        text-align: left;
+        font:
+          16px/1.5 system-ui,
+          sans-serif;
+        z-index: 11;
+      }
+      #model-preload h2 {
+        margin: 0;
+        font-size: 22px;
+      }
+      #model-preload p {
+        margin: 12px 0;
+      }
+      #model-preload button {
+        padding: 12px 16px;
+        margin: 4px 4px 4px 0;
+        border: 1px solid #a9c7ec;
+        border-radius: 8px;
+        color: #fff;
+        background: #30445d;
+        font: inherit;
+        text-transform: none;
+      }
+      #model-preload button:disabled {
+        opacity: 0.6;
+        cursor: default;
+      }
+      #model-preload button:focus-visible {
+        outline: 3px solid #b9e8d3;
+        outline-offset: 3px;
+      }
+      #model-preload #preload-ready {
+        color: #b9e8d3;
+      }
+      #XRButtonWrapper:has(#model-preload) {
+        box-sizing: border-box;
+        padding: 24px;
+        gap: 16px;
+        overflow-y: auto;
+        justify-content: safe center;
+      }
+      #XRButtonWrapper:has(#model-preload) > * {
+        flex-shrink: 0;
+      }
+      #XRButtonWrapper #model-preload {
+        position: static;
+        width: min(520px, 100%);
+        max-height: none;
+      }
+    </style>
+    <script type="importmap">
+      {
+        "imports": {
+          "marked": "https://esm.sh/marked@14.1.4",
+          "lit": "https://esm.sh/lit@3.3.1",
+          "lit/": "https://esm.sh/lit@3.3.1/",
+          "three": "https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.module.js",
+          "three/": "https://cdn.jsdelivr.net/npm/three@0.186.0/",
+          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.0/examples/jsm/",
+          "@pmndrs/uikit": "https://cdn.jsdelivr.net/npm/@pmndrs/uikit@1.0.64/dist/index.min.js",
+          "@pmndrs/uikit-pub-sub": "https://cdn.jsdelivr.net/npm/@pmndrs/uikit-pub-sub@1.0.64/dist/index.min.js",
+          "@pmndrs/msdfonts": "https://cdn.jsdelivr.net/npm/@pmndrs/msdfonts@1.0.64/dist/index.min.js",
+          "@preact/signals-core": "https://cdn.jsdelivr.net/npm/@preact/signals-core@1.14.0/dist/signals-core.mjs",
+          "yoga-layout/load": "https://cdn.jsdelivr.net/npm/yoga-layout@3.2.1/dist/src/load.js",
+          "@huggingface/transformers": "https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.0/dist/transformers.min.js",
+          "xrblocks": "../../build/xrblocks.js"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <section id="model-preload" aria-labelledby="preload-title">
+      <h2 id="preload-title">What am I looking at?</h2>
+      <p>
+        Load Gemma 4 here before continuing to the spatial controls. Capture an
+        image to describe it, read its text, or translate the text to English.
+        The landing panel and spatial controls use the same model.
+      </p>
+      <p>
+        Start with desktop Chrome and WebGPU. The model requires ~3.4 GB of
+        browser disk storage; runtime downloads and working RAM/GPU memory are
+        additional. Phone compatibility is not yet verified.
+      </p>
+      <p>
+        Loading and the first answer may pause while GPU shaders compile,
+        including after a cached reload. Later answers can be faster.
+      </p>
+      <p>
+        Camera images, questions, and answers stay on this device. Initial
+        app/runtime/model downloads use the network. Offline questions work
+        while the model remains loaded. A fresh page reload may need the
+        network.
+      </p>
+      <p id="startup" role="status" aria-live="polite" aria-atomic="true">
+        Preparing scene controls. The model downloads only when you choose
+        Download.
+      </p>
+      <p id="preload-ready" hidden>
+        Model ready. Choose Continue in simulator, or ENTER XR when available.
+      </p>
+      <button id="preload-load" type="button" disabled>
+        Download Gemma 4 (~3.4 GB)
+      </button>
+      <button id="preload-stop" type="button" hidden disabled>Stop</button>
+      <button id="preload-continue" type="button" hidden>
+        Continue in simulator
+      </button>
+      <p>
+        Answers, transcription, and translation may be incorrect. Do not use
+        this demo for safety-critical decisions.
+      </p>
+    </section>
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>
