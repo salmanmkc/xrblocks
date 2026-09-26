@@ -33,7 +33,7 @@ export function OpenDemo() {
 
 Capture the camera view, then ask Gemma 4 to describe it, read visible text, or translate that text to English. Typed follow-ups refer to the same frozen image. Image understanding and text generation run entirely on-device in a WebGPU worker, without an API key or cloud inference.
 
-Use desktop Chrome with WebGPU and enough memory for a large model. Press **Download Gemma 4 (~3.4 GB)** on the 2D page before entering the simulator or XR. The model is cached only after an explicit download; the page reports incomplete storage rather than silently downloading it again. Opening the demo in its own tab avoids additional iframe storage or permission restrictions.
+Use desktop Chrome with WebGPU and enough memory for a large model. Press **Download Gemma 4 (~3.4 GB)** on the 2D page before entering XR or choosing **Continue in simulator**. On desktop, the simulator starts behind this landing panel. The model is cached only after an explicit download; the page reports incomplete storage rather than silently downloading it again. Opening the demo in its own tab avoids additional iframe storage or permission restrictions.
 
 The camera source is `deviceCamera.captureSnapshot({outputFormat: 'imageData', width, height})`, including the simulator's virtual camera and the SDK's phone WebXR one-shot capture path. The worker uses Transformers.js 4.3.0, a pinned Gemma 4 E2B ONNX model, and a measured 140-soft-token image budget. A single retained transcript text node receives batched updates rather than rebuilding the card for each streamed chunk.
 

@@ -6,7 +6,7 @@ Capture a camera image and ask Gemma 4 to describe it, read its text, or transla
 
 Build the SDK with `npm run build:sdk`, start `npm run serve`, and open `http://127.0.0.1:8080/demos/gemma_vision/` in desktop Chrome with hardware acceleration enabled. WebGPU, `shader-f16`, and a secure context (HTTPS or localhost) are required.
 
-Press **Download Gemma 4 (~3.4 GB)** on the 2D page before entering XR or the simulator. Nothing downloads the model automatically. The page checks storage, requests persistence when available, and reports progress. Later visits offer **Load cached Gemma 4** when all required files are present. Browser persistence can be denied, and cached files can be evicted; a missing model asset requires another explicit Download action.
+Press **Download Gemma 4 (~3.4 GB)** on the 2D page before entering XR or continuing to the spatial controls. On desktop, XR Blocks starts the simulator behind this panel; press **Continue in simulator** when ready. Nothing downloads the model automatically. The page checks storage, requests persistence when available, and reports progress. Later visits offer **Load cached Gemma 4** when all required files are present. Browser persistence can be denied, and cached files can be evicted; a missing model asset requires another explicit Download action.
 
 In the spatial card, press **Capture**, then choose a preset or type a question and press **Ask**. The live viewfinder and frozen thumbnail are separate: questions refer to the thumbnail, not the changing live view. Follow-ups use the same image and completed conversation. **Capture** replaces the image and clears the conversation; **Clear conversation** retains the image and loaded model.
 
@@ -50,6 +50,8 @@ With the same 512x512 sign capture and question, three warm runs per budget prod
 | 70                | 0.48-0.49 s        | 28.5-29.6 tokens/s     | 18.6-20.0 ms           |
 
 All three budgets read that sign correctly. The 140-token default preserves more image detail than 70 while avoiding the larger budget's measured stalls. These few scenes do not establish accuracy on arbitrary photographs or documents. A cache-only worker reload took 8.5 seconds without model network requests; its first 140-budget answer then took 8.1 seconds to first text, with a 319 ms maximum frame interval during cold compilation. Warm results do not eliminate startup pauses.
+
+With the final spatial card attached, three warm runs of the **Read the text** preset returned the exact sign in 0.79-1.36 seconds to first text, at 21.7-25.8 tokens/s. Frame p95 was 18.8-19.2 ms and frame maximum 19.8-24.5 ms. The transcript node and card structure stayed identical throughout generation, and intermediate text writes were at least 100 ms apart. The final card also passed translation and an offline typed follow-up submitted through its real text input. Results depend on the image, prompt, compilation state, and other GPU activity.
 
 Images, questions, and answers remain on this device and are not persisted by the demo. The application, runtime, and initial model download require network requests to their hosting services. Once the model is loaded, further questions can run offline. **A fresh offline page reload is not guaranteed** because the application and CDN module graph are not installed as an offline app. Only model/runtime assets are cached, not conversations or camera captures.
 
