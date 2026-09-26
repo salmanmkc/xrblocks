@@ -49,7 +49,7 @@ With the same 512x512 sign capture and question, three warm runs per budget prod
 | **140 (default)** | **0.82-0.85 s**    | **28.0-28.6 tokens/s** | **18.9-19.6 ms**       |
 | 70                | 0.48-0.49 s        | 28.5-29.6 tokens/s     | 18.6-20.0 ms           |
 
-All three budgets read that sign correctly. The 140-token default preserves more image detail than 70 while avoiding the larger budget's measured stalls. These few scenes do not establish accuracy on arbitrary photographs or documents. Cold shader compilation can be substantially slower than these warm results.
+All three budgets read that sign correctly. The 140-token default preserves more image detail than 70 while avoiding the larger budget's measured stalls. These few scenes do not establish accuracy on arbitrary photographs or documents. A cache-only worker reload took 8.5 seconds without model network requests; its first 140-budget answer then took 8.1 seconds to first text, with a 319 ms maximum frame interval during cold compilation. Warm results do not eliminate startup pauses.
 
 Images, questions, and answers remain on this device and are not persisted by the demo. The application, runtime, and initial model download require network requests to their hosting services. Once the model is loaded, further questions can run offline. **A fresh offline page reload is not guaranteed** because the application and CDN module graph are not installed as an offline app. Only model/runtime assets are cached, not conversations or camera captures.
 
