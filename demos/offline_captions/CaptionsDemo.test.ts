@@ -3,7 +3,12 @@ import {beforeEach, describe, expect, it, vi} from 'vitest';
 
 import {CaptionsDemo, levelPercent} from './CaptionsDemo.js';
 import {PLACEHOLDER} from './captions.js';
-import {CACHED_LABEL, DOWNLOAD_LABEL, TOTAL_BYTES} from './modelConfig.js';
+import {
+  CACHED_LABEL,
+  DOWNLOAD_LABEL,
+  LOADED_LABEL,
+  TOTAL_BYTES,
+} from './modelConfig.js';
 
 vi.mock('xrblocks', async () => {
   const {Object3D} = await import('three');
@@ -197,6 +202,7 @@ describe('CaptionsDemo', () => {
     expect(demo.cached).toBe(true);
     expect(demo.status.text).toMatch(/Ready in 1\.5 s/);
     expect(demo.loadButton.disabled).toBe(true);
+    expect(demo.loadButton.label).toBe(LOADED_LABEL);
     expect(demo.listenButton.disabled).toBe(false);
   });
 

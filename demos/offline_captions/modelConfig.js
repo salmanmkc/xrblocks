@@ -76,3 +76,4 @@ export const ASSETS = Object.freeze(
 export const TOTAL_BYTES = ASSETS.reduce((total, {bytes}) => total + bytes, 0);
 export const DOWNLOAD_LABEL = `Download captions model (~${Math.round(TOTAL_BYTES / 1e6)} MB)`;
 export const CACHED_LABEL = 'Load cached captions model';
+export const LOADED_LABEL = 'Captions model ready';

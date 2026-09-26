@@ -5,7 +5,12 @@ import {CaptionsClient} from './CaptionsClient.js';
 import {Resampler, TARGET_SAMPLE_RATE} from './audio.js';
 import {CaptionLog, Throttle, UPDATE_MS, formatMetrics} from './captions.js';
 import {Microphone} from './microphone.js';
-import {CACHED_LABEL, DOWNLOAD_LABEL, TOTAL_BYTES} from './modelConfig.js';
+import {
+  CACHED_LABEL,
+  DOWNLOAD_LABEL,
+  LOADED_LABEL,
+  TOTAL_BYTES,
+} from './modelConfig.js';
 import * as modelStore from './modelStore.js';
 import {CaptionScheduler} from './scheduler.js';
 import {SpeechSegmenter} from './vad.js';
@@ -547,9 +552,11 @@ export class CaptionsDemo extends xb.Script {
     const loading = this.operation?.type === 'loading';
     const label = loading
       ? 'Cancel'
-      : this.cached
-        ? CACHED_LABEL
-        : DOWNLOAD_LABEL;
+      : this.client.loaded
+        ? LOADED_LABEL
+        : this.cached
+          ? CACHED_LABEL
+          : DOWNLOAD_LABEL;
     if (this.loadButton.label !== label) this.loadButton.label = label;
     this.loadButton.disabled = loading
       ? !!this.stopping
