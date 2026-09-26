@@ -281,4 +281,90 @@ describe('GemmaVisionRuntime', () => {
     expect(f.model.dispose).toHaveBeenCalledOnce();
     expect(f.replies.at(-1)).toMatchObject({id: 4, type: 'error'});
   });
+
+  it('keeps an interrupted reply out of history and ignores late streamed text', async () => {
+    const f = fixture();
+    await f.call(1, 'load');
+    await f.capture();
+    const entered = deferred();
+    const release = deferred();
+    const output = {
+      tolist: () => [Array(300).fill(0n).concat([12n])],
+      dispose: vi.fn(),
+    };
+    f.model.generate.mockImplementation(async (options) => {
+      options.streamer.options.callback_function('Partial answer');
+      entered.resolve();
+      await release.promise;
+      options.streamer.options.callback_function(' that should be ignored');
+      return output;
+    });
+    const pending = f.call(3, 'generate', {imageId: 1, question: 'Describe'});
+    await entered.promise;
+    const stopping = f.call(4, 'stop', {targetId: 3});
+    release.resolve();
+    await Promise.all([pending, stopping]);
+    expect(f.runtime.history).toEqual([]);
+    expect(f.replies.filter((reply) => reply.type === 'delta')).toEqual([
+      {type: 'delta', id: 3, text: 'Partial answer'},
+    ]);
+    expect(output.dispose).toHaveBeenCalledOnce();
+    expect(f.replies).toContainEqual(
+      expect.objectContaining({
+        id: 3,
+        result: expect.objectContaining({
+          text: 'Partial answer',
+          interrupted: true,
+        }),
+      })
+    );
+  });
+
+  it('rejects expanded context overflow and releases processor tensors', async () => {
+    const f = fixture();
+    await f.call(1, 'load');
+    await f.capture();
+    f.process.mockResolvedValue({
+      input_ids: {dims: [1, 4096], dispose: f.disposeInput},
+      pixel_values: {dims: [1, 1260, 768], dispose: f.disposeInput},
+      num_soft_tokens_per_image: [121],
+    });
+    await f.call(3, 'generate', {imageId: 1, question: 'Describe'});
+    expect(f.replies.at(-1)).toMatchObject({
+      type: 'error',
+      message: expect.stringContaining('Context budget'),
+    });
+    expect(f.model.generate).not.toHaveBeenCalled();
+    expect(f.disposeInput).toHaveBeenCalledTimes(2);
+    expect(f.runtime.history).toEqual([]);
+  });
+
+  it('releases inputs on generation failure without saving a completed answer', async () => {
+    const f = fixture();
+    await f.call(1, 'load');
+    await f.capture();
+    f.model.generate.mockRejectedValue(new Error('GPU device lost'));
+    await f.call(3, 'generate', {imageId: 1, question: 'Describe'});
+    expect(f.replies.at(-1)).toMatchObject({type: 'error', fatal: true});
+    expect(f.disposeInput).toHaveBeenCalledTimes(2);
+    expect(f.runtime.history).toEqual([]);
+  });
+
+  it('does not confuse a loaded model with a successfully persisted cache', async () => {
+    const f = fixture();
+    f.store.inspectCache
+      .mockResolvedValueOnce({complete: false, missingBytes: 10})
+      .mockResolvedValueOnce({complete: false, missingBytes: 10});
+    await f.call(1, 'load', {allowDownload: true});
+    expect(f.replies.at(-1)).toMatchObject({
+      type: 'result',
+      result: {
+        cached: false,
+        cacheWarning: expect.stringContaining('not fully saved'),
+      },
+    });
+    expect(
+      f.library.Gemma4ForConditionalGeneration.from_pretrained
+    ).toHaveBeenCalledOnce();
+  });
 });
