@@ -9,7 +9,7 @@ function deferred() {
 }
 
 function fixture() {
-  const replies: Record<string, any>[] = [];
+  const replies: Array<{type: string; id: number; [key: string]: unknown}> = [];
   const disposeInput = vi.fn();
   const disposeOutput = vi.fn();
   const process = vi.fn(async () => ({

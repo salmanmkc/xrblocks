@@ -29,4 +29,4 @@ export const MODEL_BYTES = Object.values(MODEL_FILES).reduce(
   (total, bytes) => total + bytes,
   0
 );
-export const IMAGE_BUDGET = 280;
+export const IMAGE_BUDGET = 140;

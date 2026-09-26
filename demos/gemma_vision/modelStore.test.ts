@@ -95,7 +95,7 @@ describe('pinned model manifest', () => {
       'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.31.0-dev.20260914-8d85527a0/dist/'
     );
     expect(CACHE_NAME).toBe('xrblocks-gemma-vision-4.3.0');
-    expect(IMAGE_BUDGET).toBe(280);
+    expect(IMAGE_BUDGET).toBe(140);
     expect(Object.keys(MODEL_FILES)).toHaveLength(14);
     expect(MODEL_FILES).not.toHaveProperty('preprocessor_config.json');
     expect(MODEL_FILES['config.json']).toBe(5549);
