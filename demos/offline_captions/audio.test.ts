@@ -1,6 +1,6 @@
 import {describe, expect, it} from 'vitest';
 
-import {Resampler, concatFloat32, rms} from './audio.js';
+import {Resampler, concatFloat32, decodeWav, rms} from './audio.js';
 
 function sine(rate: number, seconds: number, frequency: number) {
   const samples = new Float32Array(Math.round(rate * seconds));
@@ -80,5 +80,51 @@ describe('audio helpers', () => {
     expect([...joined]).toEqual([1, 2, 3]);
     expect(rms(new Float32Array(0))).toBe(0);
     expect(rms(Float32Array.from([0.5, -0.5]))).toBeCloseTo(0.5);
+  });
+});
+
+function wav(channels: number[][], sampleRate: number, bits = 16, code = 1) {
+  const frames = channels[0].length;
+  const bytes = frames * channels.length * 2;
+  const buffer = new ArrayBuffer(44 + 10 + bytes);
+  const view = new DataView(buffer);
+  const write = (offset: number, text: string) =>
+    [...text].forEach((c, i) => view.setUint8(offset + i, c.charCodeAt(0)));
+  write(0, 'RIFF');
+  view.setUint32(4, buffer.byteLength - 8, true);
+  write(8, 'WAVE');
+  write(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, code, true);
+  view.setUint16(22, channels.length, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint16(34, bits, true);
+  write(36, 'LIST');
+  view.setUint32(40, 2, true);
+  write(46, 'data');
+  view.setUint32(50, bytes, true);
+  for (let i = 0; i < frames; i++) {
+    channels.forEach((channel, c) =>
+      view.setInt16(54 + (i * channels.length + c) * 2, channel[i], true)
+    );
+  }
+  return buffer;
+}
+
+describe('decodeWav', () => {
+  it('decodes 16-bit PCM, skipping unknown chunks and mixing channels', () => {
+    expect(decodeWav(wav([[0, 16384, -32768]], 16000))).toEqual({
+      samples: new Float32Array([0, 0.5, -1]),
+      sampleRate: 16000,
+    });
+    const stereo = decodeWav(wav([[16384], [0]], 48000));
+    expect(stereo.sampleRate).toBe(48000);
+    expect(stereo.samples[0]).toBeCloseTo(0.25);
+  });
+
+  it('rejects unsupported files', () => {
+    expect(() => decodeWav(new ArrayBuffer(4))).toThrow(/Not a WAV/);
+    expect(() => decodeWav(wav([[0]], 16000, 8))).toThrow(/16-bit PCM/);
+    expect(() => decodeWav(wav([[0]], 16000, 16, 3))).toThrow(/16-bit PCM/);
   });
 });

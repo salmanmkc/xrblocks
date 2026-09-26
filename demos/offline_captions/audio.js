@@ -78,3 +78,51 @@ export function rms(samples) {
   for (const sample of samples) sum += sample * sample;
   return Math.sqrt(sum / samples.length);
 }
+
+/**
+ * Decode a 16-bit PCM WAV file to mono floats, for the debug file feed.
+ * @param {ArrayBuffer} buffer
+ * @returns {{samples: Float32Array, sampleRate: number}}
+ */
+export function decodeWav(buffer) {
+  const view = new DataView(buffer);
+  const tag = (offset) =>
+    String.fromCharCode(
+      ...new Uint8Array(buffer, offset, Math.min(4, buffer.byteLength - offset))
+    );
+  if (buffer.byteLength < 12 || tag(0) !== 'RIFF' || tag(8) !== 'WAVE') {
+    throw new Error('Not a WAV file.');
+  }
+  let format = null;
+  for (let offset = 12; offset + 8 <= buffer.byteLength; ) {
+    const id = tag(offset);
+    const size = view.getUint32(offset + 4, true);
+    const body = offset + 8;
+    if (id === 'fmt ') {
+      format = {
+        code: view.getUint16(body, true),
+        channels: view.getUint16(body + 2, true),
+        sampleRate: view.getUint32(body + 4, true),
+        bits: view.getUint16(body + 14, true),
+      };
+    } else if (id === 'data') {
+      if (!format || format.code !== 1 || format.bits !== 16) {
+        throw new Error('Only 16-bit PCM WAV files are supported.');
+      }
+      const frames = Math.floor(
+        Math.min(size, buffer.byteLength - body) / (2 * format.channels)
+      );
+      const samples = new Float32Array(frames);
+      for (let i = 0; i < frames; i++) {
+        let sum = 0;
+        for (let c = 0; c < format.channels; c++) {
+          sum += view.getInt16(body + (i * format.channels + c) * 2, true);
+        }
+        samples[i] = sum / format.channels / 32768;
+      }
+      return {samples, sampleRate: format.sampleRate};
+    }
+    offset = body + size + (size % 2);
+  }
+  throw new Error('The WAV file has no audio data.');
+}
