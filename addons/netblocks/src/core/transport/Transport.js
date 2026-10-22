@@ -1,45 +1,36 @@
-/**
- * Transport: the contract every netblocks transport must satisfy.
- *
- * A Transport is responsible for:
- *  - Establishing a connection to a "room" (any string id).
- *  - Reporting peer join/leave events as the local view of room membership
- *    changes.
- *  - Sending an opaque byte payload either to a specific peer or as a
- *    broadcast to every other peer in the room.
- *  - Surfacing inbound messages with the sender's peer id.
- *
- * The Transport intentionally knows nothing about the netblocks message
- * protocol — it just moves bytes. NetSession layers presence, RPC, etc. on
- * top via MessageCodec.
- *
- * All transports are EventTarget subclasses so that consumers can use the
- * standard `addEventListener` / `removeEventListener` API.
- */
-class Transport extends EventTarget {
-    /** Convenience: typed event subscription. */
-    on(type, listener) {
-        this.addEventListener(type, listener);
-    }
-    off(type, listener) {
-        this.removeEventListener(type, listener);
-    }
-    emitPeerJoin(peerId) {
-        this.dispatchEvent(new CustomEvent('peer-join', { detail: { peerId } }));
-    }
-    emitPeerLeave(peerId) {
-        this.dispatchEvent(new CustomEvent('peer-leave', {
-            detail: { peerId },
-        }));
-    }
-    emitMessage(peerId, data) {
-        this.dispatchEvent(new CustomEvent('message', {
-            detail: { peerId, data },
-        }));
-    }
-    emitError(error) {
-        this.dispatchEvent(new CustomEvent('error', { detail: { error } }));
-    }
-}
-
+//#region src/addons/netblocks/src/core/transport/Transport.ts
+var Transport = class extends EventTarget {
+	/** Local lossy-lane capability; does not guarantee readiness for any peer. */
+	get supportsUnreliable() {
+		return false;
+	}
+	/** Optional lossy lane. True means queued, not delivered. Never falls back to reliable. */
+	sendUnreliable(_payload, _targetPeerId) {
+		return false;
+	}
+	/** Convenience: typed event subscription. */
+	on(type, listener) {
+		this.addEventListener(type, listener);
+	}
+	off(type, listener) {
+		this.removeEventListener(type, listener);
+	}
+	emitPeerJoin(peerId) {
+		this.dispatchEvent(new CustomEvent("peer-join", { detail: { peerId } }));
+	}
+	emitPeerLeave(peerId) {
+		this.dispatchEvent(new CustomEvent("peer-leave", { detail: { peerId } }));
+	}
+	emitMessage(peerId, data, delivery = "reliable") {
+		this.dispatchEvent(new CustomEvent("message", { detail: {
+			peerId,
+			data,
+			...delivery === "unreliable" ? { delivery } : {}
+		} }));
+	}
+	emitError(error) {
+		this.dispatchEvent(new CustomEvent("error", { detail: { error } }));
+	}
+};
+//#endregion
 export { Transport };
