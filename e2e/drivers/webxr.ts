@@ -89,8 +89,8 @@ export class IwerDriver implements XRTestDriver {
   webgpu = false;
 
   /**
-   * Whether the installed IWER can emulate WebGPU sessions (XRGPUBinding).
-   * Releases up to 2.5.0 can't, so WebGPU projects skip until it can.
+   * Whether the installed IWER can emulate WebGPU sessions (it has
+   * XRGPUBinding). WebGPU projects skip when it can't.
    */
   static emulatesWebGPU(): boolean {
     return readFileSync(IWER_BUILD, 'utf8').includes('XRGPUBinding');

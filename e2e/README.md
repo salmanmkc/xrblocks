@@ -31,8 +31,8 @@ Useful knobs:
   swiftshader in CI).
 - `npm run test:e2e -- --project=sim-webgl` — one backend.
 - `npm run test:e2e -- --project=xr-iwer-webgpu` — the IWER scenarios with
-  `THREE.WebGPURenderer`. They skip until the installed IWER emulates WebGPU
-  sessions (`XRGPUBinding`); IWER 2.5.0 doesn't.
+  `THREE.WebGPURenderer`. They skip unless the installed IWER emulates WebGPU
+  sessions (it has `XRGPUBinding`).
 
 ## How the simulator driver works
 
