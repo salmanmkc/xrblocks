@@ -23,9 +23,17 @@ export const test = base.extend<Fixtures>({
     const webxr = project.startsWith('xr-');
     const webgpu = project === 'sim-webgpu';
     if (webgpu) {
-      const supported = await page.evaluate(
-        () => typeof navigator !== 'undefined' && 'gpu' in navigator
-      );
+      // about:blank isn't a secure context, so it never has navigator.gpu: ask
+      // for an adapter on the test server's origin instead.
+      await page.goto(process.env.E2E_BASE_URL!);
+      const supported = await page.evaluate(async () => {
+        const gpu = (
+          navigator as Navigator & {
+            gpu?: {requestAdapter(): Promise<unknown>};
+          }
+        ).gpu;
+        return Boolean(await gpu?.requestAdapter());
+      });
       if (!supported) {
         testInfo.skip(true, 'WebGPU is not available in this browser.');
       }
