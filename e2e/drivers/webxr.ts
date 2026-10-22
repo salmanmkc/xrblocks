@@ -7,6 +7,7 @@ import type {
   XRTestDriver,
   DriverState,
 } from './types';
+import {assertRendersWithWebGPU} from './webgpu';
 import {captureFrameStats} from './frame-stats';
 
 type IwerController = {
@@ -233,6 +234,7 @@ export class IwerDriver implements XRTestDriver {
       () =>
         (globalThis as Record<string, unknown>).__xrSemReady as Promise<unknown>
     );
+    if (this.webgpu) await assertRendersWithWebGPU(this.page, true);
   }
 
   /** The XR frame loop runs on real time, so this waits rather than steps. */
