@@ -8,7 +8,7 @@ page.
 
 | Path                                     | Purpose                                                                  |
 | ---------------------------------------- | ------------------------------------------------------------------------ |
-| `playwright.config.ts`                   | Playwright config; `sim-webgl` and `sim-webgpu` projects                 |
+| `playwright.config.ts`                   | Playwright config; simulator and IWER projects, each on WebGL and WebGPU |
 | `global-setup.ts` / `global-teardown.ts` | Static repo server on an ephemeral port (bind 0)                         |
 | `server.ts`                              | Minimal static file server used by the fixtures                          |
 | `drivers/types.ts`                       | `XRTestDriver` interface shared by all drivers                           |
@@ -30,6 +30,9 @@ Useful knobs:
 - `E2E_GL=vulkan|swiftshader` — GPU backend flags (default: vulkan locally,
   swiftshader in CI).
 - `npm run test:e2e -- --project=sim-webgl` — one backend.
+- `npm run test:e2e -- --project=xr-iwer-webgpu` — the IWER scenarios with
+  `THREE.WebGPURenderer`. They skip until the installed IWER emulates WebGPU
+  sessions (`XRGPUBinding`); IWER 2.5.0 doesn't.
 
 ## How the simulator driver works
 

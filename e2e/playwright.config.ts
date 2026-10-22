@@ -40,5 +40,6 @@ export default defineConfig({
     {name: 'sim-webgl', testIgnore: '**/xr-*.spec.ts'},
     {name: 'sim-webgpu', testIgnore: '**/xr-*.spec.ts'},
     {name: 'xr-iwer', testMatch: '**/xr-*.spec.ts'},
+    {name: 'xr-iwer-webgpu', testMatch: '**/xr-*.spec.ts'},
   ],
 });

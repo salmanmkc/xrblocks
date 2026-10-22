@@ -5,8 +5,11 @@ import {test, expect} from '../fixtures/boot';
 // (frame.detectedPlanes / detectedMeshes / depth information), and these
 // tests assert the SDK consumes it.
 
+// Boot with the features on rather than booting again: a second boot in the
+// same page can lose IWER's WebGPU support while the first app tears down.
+test.use({appPath: 'e2e/fixtures/apps/harness.html?depth=1&planes=1&meshes=1'});
+
 test('depth sensing is active in the session', async ({driver}) => {
-  await driver.boot('e2e/fixtures/apps/harness.html?depth=1&planes=1&meshes=1');
   const state = await driver.getState();
   expect(state.depthEnabled).toBe(true);
 
@@ -18,7 +21,6 @@ test('depth sensing is active in the session', async ({driver}) => {
 });
 
 test('plane detection surfaces planes in the SDK', async ({driver}) => {
-  await driver.boot('e2e/fixtures/apps/harness.html?depth=1&planes=1&meshes=1');
   await driver.step(400);
   const state = await driver.getState();
   // Emulator-side truth first, then the SDK-side consumption.
@@ -27,7 +29,6 @@ test('plane detection surfaces planes in the SDK', async ({driver}) => {
 });
 
 test('mesh detection surfaces scene meshes in the SDK', async ({driver}) => {
-  await driver.boot('e2e/fixtures/apps/harness.html?depth=1&planes=1&meshes=1');
   await driver.step(400);
   const state = await driver.getState();
   expect(state.semMeshes).toBeGreaterThan(0);
