@@ -4,7 +4,7 @@ import {defineConfig} from '@playwright/test';
  * GPU flags: Vulkan/ANGLE on developer machines (renders on the iGPU), and
  * software GL in CI where no GPU is available. Override with E2E_GL=vulkan|swiftshader.
  */
-function gpuArgs(): string[] {
+function gpuArgs(webgpu = false): string[] {
   const base = [
     '--ignore-gpu-blocklist',
     '--enable-gpu-rasterization',
@@ -12,9 +12,20 @@ function gpuArgs(): string[] {
   ];
   const flavor =
     process.env.E2E_GL ?? (process.env.CI ? 'swiftshader' : 'vulkan');
-  return flavor === 'swiftshader'
-    ? [...base, '--use-angle=swiftshader', '--enable-unsafe-swiftshader']
-    : [...base, '--enable-features=Vulkan', '--use-angle=vulkan'];
+  if (flavor !== 'swiftshader') {
+    return [...base, '--enable-features=Vulkan', '--use-angle=vulkan'];
+  }
+  const swiftshader = [
+    ...base,
+    '--use-angle=swiftshader',
+    '--enable-unsafe-swiftshader',
+  ];
+  // On Linux, a WebGPU canvas can't share its texture with the software GL
+  // compositor, so the device is lost on the first frame. Compositing with
+  // SwiftShader's Vulkan instead works.
+  return webgpu
+    ? [...swiftshader, '--enable-features=Vulkan', '--use-vulkan=swiftshader']
+    : swiftshader;
 }
 
 export default defineConfig({
@@ -38,7 +49,16 @@ export default defineConfig({
   projects: [
     // The boot fixture picks the driver from the project name.
     {name: 'sim-webgl', testIgnore: '**/xr-*.spec.ts'},
-    {name: 'sim-webgpu', testIgnore: '**/xr-*.spec.ts'},
+    {
+      name: 'sim-webgpu',
+      testIgnore: '**/xr-*.spec.ts',
+      use: {launchOptions: {args: gpuArgs(true)}},
+    },
     {name: 'xr-iwer', testMatch: '**/xr-*.spec.ts'},
+    {
+      name: 'xr-iwer-webgpu',
+      testMatch: '**/xr-*.spec.ts',
+      use: {launchOptions: {args: gpuArgs(true)}},
+    },
   ],
 });

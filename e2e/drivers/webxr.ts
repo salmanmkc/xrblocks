@@ -1,3 +1,4 @@
+import {readFileSync} from 'node:fs';
 import type {Page} from '@playwright/test';
 import type {
   CompoundControl,
@@ -6,6 +7,7 @@ import type {
   XRTestDriver,
   DriverState,
 } from './types';
+import {assertRendersWithWebGPU} from './webgpu';
 import {captureFrameStats} from './frame-stats';
 
 type IwerController = {
@@ -71,6 +73,11 @@ type TransientPointerState = {
   aim(buttonName: string): void;
 };
 
+const IWER_BUILD = new URL(
+  '../../node_modules/iwer/build/iwer.js',
+  import.meta.url
+).pathname;
+
 /**
  * Drives the REAL WebXR code path through Meta's IWER (Immersive Web
  * Emulation Runtime): `navigator.xr` is replaced by an emulated headset
@@ -79,8 +86,16 @@ type TransientPointerState = {
  * exactly as on device — just with a software device behind them.
  */
 export class IwerDriver implements XRTestDriver {
-  /** Not used by this driver; kept for interface symmetry. */
+  /** Renders with THREE.WebGPURenderer, through IWER's WebGPU binding. */
   webgpu = false;
+
+  /**
+   * Whether the installed IWER can emulate WebGPU sessions (it has
+   * XRGPUBinding). WebGPU projects skip when it can't.
+   */
+  static emulatesWebGPU(): boolean {
+    return readFileSync(IWER_BUILD, 'utf8').includes('XRGPUBinding');
+  }
 
   constructor(
     private readonly page: Page,
@@ -94,10 +109,7 @@ export class IwerDriver implements XRTestDriver {
     }
     // IWER must exist before the app runs: this is what makes the SDK take
     // its WebXR path instead of the desktop simulator.
-    await this.page.addInitScript({
-      path: new URL('../../node_modules/iwer/build/iwer.js', import.meta.url)
-        .pathname,
-    });
+    await this.page.addInitScript({path: IWER_BUILD});
     // The Synthetic Environment Module emulates planes, meshes, hit-test,
     // and depth; it attaches to the IWER namespace and needs IWER first.
     await this.page.addInitScript({
@@ -164,7 +176,7 @@ export class IwerDriver implements XRTestDriver {
     const separator = appPath.includes('?') ? '&' : '?';
     const sessionMode = this.options.sessionMode ?? 'immersive-vr';
     await this.page.goto(
-      `${base}/${appPath}${separator}debug=1&xr=1&sessionMode=${sessionMode}`
+      `${base}/${appPath}${separator}debug=1&xr=1&sessionMode=${sessionMode}&webgpu=${this.webgpu ? 1 : 0}`
     );
     await this.page.waitForFunction(
       () =>
@@ -222,11 +234,27 @@ export class IwerDriver implements XRTestDriver {
       () =>
         (globalThis as Record<string, unknown>).__xrSemReady as Promise<unknown>
     );
+    if (this.webgpu) await assertRendersWithWebGPU(this.page, true);
   }
 
-  /** The XR frame loop runs on real time; just wait. */
+  /** The XR frame loop runs on real time, so this waits rather than steps. */
   step(durationMs: number, _control?: CompoundControl): Promise<void> {
-    return this.page.waitForTimeout(durationMs);
+    return this.settle(durationMs);
+  }
+
+  /**
+   * Waits `durationMs` and at least two app frames, so an input change spans
+   * a full XR frame even at WebGPU-on-SwiftShader frame rates (~10fps).
+   */
+  private async settle(durationMs = 120): Promise<void> {
+    const frames = await this.page.evaluate(() => window.__e2e.state().frames);
+    await Promise.all([
+      this.page.waitForTimeout(durationMs),
+      this.page.waitForFunction(
+        (target) => window.__e2e.state().frames >= target,
+        frames + 2
+      ),
+    ]);
   }
 
   getState(): Promise<DriverState> {
@@ -281,7 +309,7 @@ export class IwerDriver implements XRTestDriver {
       [HAND[hand], objectName] as const
     );
     // Let the XR loop register the new pose.
-    await this.page.waitForTimeout(120);
+    await this.settle();
   }
 
   /** Press/release the emulated controller's trigger. */
@@ -306,7 +334,7 @@ export class IwerDriver implements XRTestDriver {
       },
       [HAND[hand], press ? 1 : 0] as const
     );
-    await this.page.waitForTimeout(120);
+    await this.settle();
   }
 
   /** Click a UI button with native select events before the source vanishes. */
@@ -319,7 +347,7 @@ export class IwerDriver implements XRTestDriver {
       const {controller} = state;
       controller.dispatchEvent({type: 'selectstart', data: state.source});
     });
-    await this.page.waitForTimeout(120);
+    await this.settle();
     await this.page.evaluate(() => {
       const state = (
         globalThis as unknown as {__transientPointer: TransientPointerState}
@@ -329,7 +357,7 @@ export class IwerDriver implements XRTestDriver {
       controller.dispatchEvent({type: 'selectend', data: state.source});
       state.remove();
     });
-    await this.page.waitForTimeout(120);
+    await this.settle();
   }
 
   /** Release A while immediately reusing its WebXR controller slot for B. */
@@ -349,7 +377,7 @@ export class IwerDriver implements XRTestDriver {
 
       controller.dispatchEvent({type: 'selectstart', data: state.source});
     });
-    await this.page.waitForTimeout(120);
+    await this.settle();
     await this.page.evaluate(() => {
       const state = (
         globalThis as unknown as {__transientPointer: TransientPointerState}
@@ -363,7 +391,7 @@ export class IwerDriver implements XRTestDriver {
       controller.dispatchEvent({type: 'selectstart', data: nextSource});
     });
     // Let the first frame consume A's saved release and the next frame begin B.
-    await this.page.waitForTimeout(120);
+    await this.settle();
     const afterReuse = await this.page.evaluate(() => {
       const core = (
         window as unknown as {
@@ -390,7 +418,7 @@ export class IwerDriver implements XRTestDriver {
       controller.dispatchEvent({type: 'selectend', data: state.source});
       state.remove();
     });
-    await this.page.waitForTimeout(120);
+    await this.settle();
     return {
       afterReuse,
       afterButtonBRelease: await this.page.evaluate(() =>
@@ -493,7 +521,7 @@ export class IwerDriver implements XRTestDriver {
         aim,
       };
     }, buttonName);
-    await this.page.waitForTimeout(120);
+    await this.settle();
     await this.page.waitForFunction((name) => {
       const core = (window as any).xb.core;
       return core.interaction.isPointingAt((window as any).__e2e.objects[name]);
