@@ -1,4 +1,4 @@
-import {test, expect} from '../fixtures/boot';
+import {test, expect, rendersWithWebGPU} from '../fixtures/boot';
 import {IwerDriver} from '../drivers/webxr';
 
 // WebXR code-path integration tests: IWER installs an emulated headset as
@@ -22,8 +22,9 @@ test('enters an immersive session and presents', async ({driver, page}) => {
 
 test('applies a supported target frame rate to the IWER session', async ({
   page,
-}) => {
+}, testInfo) => {
   const driver = new IwerDriver(page);
+  driver.webgpu = await rendersWithWebGPU(page, testInfo);
   try {
     await driver.boot('e2e/fixtures/apps/harness.html?targetFrameRate=72');
     await page.waitForFunction(() => {

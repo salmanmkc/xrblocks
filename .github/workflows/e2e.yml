@@ -18,8 +18,18 @@ permissions:
 
 jobs:
   e2e:
+    name: e2e (${{ matrix.renderer }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # WebGPU on SwiftShader is slow, so its projects run in their own job.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - renderer: webgl
+            projects: --project=sim-webgl --project=xr-iwer
+          - renderer: webgpu
+            projects: --project=sim-webgpu --project=xr-iwer-webgpu
 
     steps:
       - name: Checkout code
@@ -42,7 +52,7 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       - name: Run E2E suite
-        run: npm run test:e2e
+        run: npm run test:e2e -- ${{ matrix.projects }}
         env:
           E2E_GL: swiftshader
 
@@ -50,7 +60,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: e2e-report
+          name: e2e-report-${{ matrix.renderer }}
           path: |
             e2e/playwright-report/
             e2e/test-results/

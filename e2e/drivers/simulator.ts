@@ -6,6 +6,7 @@ import type {
   XRTestDriver,
   DriverState,
 } from './types';
+import {assertRendersWithWebGPU} from './webgpu';
 
 declare global {
   interface Window {
@@ -70,6 +71,7 @@ export class SimulatorDriver implements XRTestDriver {
       {timeout: 30_000}
     );
     await this.page.evaluate(() => window.__e2e.ready);
+    if (this.webgpu) await assertRendersWithWebGPU(this.page, false);
   }
 
   getState(): Promise<DriverState> {
